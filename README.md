@@ -211,6 +211,12 @@ Available feature sets:
 - `irregularity` — covariance eigenvalue-based composite score on numeric columns; produces individual components plus a combined `irregularity` column
 - `pymfe` — requires `pip install -e ".[pymfe]"`; extracts features via the pymfe library
 
+Categorical handling note:
+- Columns with dtype `object`, pandas `category`, or `bool` are treated as categorical.
+- `basic` uses that classification for `cat_fraction`.
+- `irregularity` runs on numeric columns only.
+- `pymfe` internally converts categorical columns to category codes before extraction.
+
 Available irregularity components (all included by default):
 - `irreg_min_cov_eig` — minimum covariance eigenvalue
 - `irreg_std_skew` — standard deviation of feature skewness
