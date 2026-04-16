@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 
-from mfa.gaps.pairwise import compute_pairwise_gaps, pick_best_in_group
+from mfa.gaps.pairwise import GAP_TABLE_COLUMNS, compute_pairwise_gaps, pick_best_in_group
 
 
 def test_pick_best_in_group_uses_deterministic_tie_break(synthetic_results) -> None:
@@ -26,3 +27,37 @@ def test_compute_pairwise_gaps_delta_sign(analysis_config, synthetic_results) ->
     assert np.isclose(first_split["delta_raw"], 0.10)
     assert first_split["delta_norm"] > 0
 
+
+def test_compute_pairwise_gaps_warns_and_returns_empty_schema_when_group_missing(
+    analysis_config,
+    monkeypatch,
+) -> None:
+    warnings: list[str] = []
+
+    def capture_warning(message: str, *args) -> None:
+        warnings.append(message % args if args else message)
+
+    monkeypatch.setattr("mfa.gaps.pairwise.logger.warning", capture_warning)
+    results = pd.DataFrame(
+        [
+            ["dataset_a", 0, "nn_alpha", 0.20, 0.21, "NN_A", "tuned"],
+            ["dataset_a", 3, "nn_beta", 0.25, 0.26, "NN_B", "tuned"],
+        ],
+        columns=[
+            "dataset",
+            "fold",
+            "method",
+            "metric_error",
+            "metric_error_val",
+            "config_type",
+            "method_subtype",
+        ],
+    )
+    gaps = compute_pairwise_gaps(
+        results,
+        analysis_config.comparisons,
+        error_column=analysis_config.analysis.error_column,
+    )
+    assert gaps.empty
+    assert gaps.columns.tolist() == GAP_TABLE_COLUMNS
+    assert any("missing group `gbdt`" in message for message in warnings)

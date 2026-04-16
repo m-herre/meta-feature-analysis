@@ -21,6 +21,14 @@ def _filter_methods(methods: Sequence[str], exclude_patterns: Sequence[str]) -> 
     return [method for method in methods if all(pattern not in method for pattern in exclude_patterns)]
 
 
+def _sanitize_result_frame(df_results: pd.DataFrame) -> pd.DataFrame:
+    """Restrict raw results to the cache-safe schema used by the pipeline."""
+    missing_columns = [column for column in REQUIRED_RESULT_COLUMNS if column not in df_results.columns]
+    if missing_columns:
+        raise ValueError(f"Loaded results are missing required columns: {missing_columns}")
+    return df_results.loc[:, REQUIRED_RESULT_COLUMNS].copy()
+
+
 def load_tabarena_results(
     config: AnalysisConfig,
     *,
@@ -57,9 +65,4 @@ def load_tabarena_results(
         dataset_set = set(datasets)
         df_results = df_results[df_results["dataset"].isin(dataset_set)].copy()
 
-    missing_columns = [column for column in REQUIRED_RESULT_COLUMNS if column not in df_results.columns]
-    if missing_columns:
-        raise ValueError(f"Loaded results are missing required columns: {missing_columns}")
-
-    return df_results.reset_index(drop=True)
-
+    return _sanitize_result_frame(df_results).reset_index(drop=True)

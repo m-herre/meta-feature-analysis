@@ -49,6 +49,11 @@ def stage_cache_path(cache_dir: str | Path, stage: int, name: str, cache_hash: s
     return cache_root / f"stage{stage}_{name}" / f"{cache_hash}.{suffix}"
 
 
+def metafeature_split_cache_dir(cache_dir: str | Path) -> Path:
+    cache_root = Path(cache_dir)
+    return cache_root / "metafeatures" / "splits"
+
+
 def write_dataframe_cache(df: pd.DataFrame, cache_dir: str | Path, stage: int, name: str, cache_hash: str) -> Path:
     """Persist a DataFrame cache entry as parquet."""
     path = stage_cache_path(cache_dir, stage, name, cache_hash, "parquet")
@@ -97,4 +102,7 @@ def invalidate_downstream(cache_dir: str | Path, from_stage: int) -> None:
         stage_number = int(prefix.removeprefix("stage"))
         if stage_number >= from_stage:
             shutil.rmtree(path)
-
+    if from_stage <= 2:
+        split_cache_dir = metafeature_split_cache_dir(cache_root)
+        if split_cache_dir.exists():
+            shutil.rmtree(split_cache_dir)

@@ -102,6 +102,58 @@ def _deserialize_multivariate_result(payload: dict | None) -> MultivariateResult
     )
 
 
+def _cache_version_hash(config: AnalysisConfig) -> str:
+    return compute_config_hash({"version": config.version})
+
+
+def _comparison_cache_payload(comparisons) -> list[dict]:
+    return [
+        {
+            "name": comparison.name,
+            "group_a": {
+                "name": comparison.group_a.name,
+                "label": comparison.group_a.label,
+                "config_types": sorted(comparison.group_a.config_types),
+            },
+            "group_b": {
+                "name": comparison.group_b.name,
+                "label": comparison.group_b.label,
+                "config_types": sorted(comparison.group_b.config_types),
+            },
+            "expected_direction": comparison.expected_direction,
+        }
+        for comparison in comparisons
+    ]
+
+
+def _analysis_stage_hash(*, gap_hash: str, metafeature_hash: str, unit: str) -> str:
+    return compute_stage_hash(
+        "analysis_table",
+        compute_config_hash({"gap_hash": gap_hash, "metafeature_hash": metafeature_hash}),
+        {"unit": unit},
+    )
+
+
+def _statistics_cache_params(
+    config: AnalysisConfig,
+    *,
+    predictor_columns: Sequence[str],
+    target: str,
+) -> dict:
+    return {
+        "correlation_method": config.statistics.correlation_method.value,
+        "predictors": list(predictor_columns),
+        "target": target,
+        "fdr_method": None if config.statistics.fdr_method is None else config.statistics.fdr_method.value,
+        "alpha": config.statistics.alpha,
+        "confidence_interval": config.statistics.confidence_interval,
+        "ci_bootstrap_samples": config.statistics.ci_bootstrap_samples,
+        "ci_confidence_level": config.statistics.ci_confidence_level,
+        "multivariate": config.statistics.multivariate,
+        "multivariate_method": config.statistics.multivariate_method.value,
+    }
+
+
 def run_analysis(
     config: AnalysisConfig,
     *,
@@ -111,12 +163,13 @@ def run_analysis(
 ) -> AnalysisResult:
     """Run the full meta-feature analysis pipeline."""
     config_hash = compute_config_hash(config.to_dict())
+    cache_version_hash = _cache_version_hash(config)
     cache_dir = config.cache.directory
     dataset_list = sorted(datasets) if datasets is not None else None
 
     raw_hash = compute_stage_hash(
         "raw_results",
-        config_hash,
+        cache_version_hash,
         {
             "datasets": dataset_list,
             "method_variant": config.analysis.method_variant,
@@ -140,7 +193,7 @@ def run_analysis(
     metadata = _get_task_metadata(task_metadata)
     metafeature_hash = compute_stage_hash(
         "metafeatures",
-        config_hash,
+        cache_version_hash,
         {
             "datasets": dataset_list,
             "feature_sets": config.metafeatures.feature_sets,
@@ -162,6 +215,7 @@ def run_analysis(
             pymfe_groups=config.metafeatures.pymfe_groups,
             pymfe_summary=config.metafeatures.pymfe_summary,
             irregularity_components=config.metafeatures.irregularity_components,
+            cache_version=config.version,
         )
         if config.cache.enabled and config.cache.stages.metafeatures:
             write_dataframe_cache(metafeature_table, cache_dir, 2, "metafeatures", metafeature_hash)
@@ -170,14 +224,7 @@ def run_analysis(
         "gaps",
         raw_hash,
         {
-            "comparisons": [
-                {
-                    "name": comparison.name,
-                    "group_a": comparison.group_a.name,
-                    "group_b": comparison.group_b.name,
-                }
-                for comparison in config.comparisons
-            ],
+            "comparisons": _comparison_cache_payload(config.comparisons),
             "error_column": config.analysis.error_column,
         },
     )
@@ -203,17 +250,16 @@ def run_analysis(
         for column in metafeature_table.columns
         if column not in {"dataset", "repeat", "fold"} and not column.startswith("_")
     ]
+    analysis_hash = _analysis_stage_hash(
+        gap_hash=gap_hash,
+        metafeature_hash=metafeature_hash,
+        unit=config.analysis.unit.value,
+    )
 
     stats_hash = compute_stage_hash(
         "statistics",
-        gap_hash,
-        {
-            "unit": config.analysis.unit.value,
-            "correlation_method": config.statistics.correlation_method.value,
-            "predictors": predictor_columns,
-            "target": "delta_norm",
-            "fdr_method": None if config.statistics.fdr_method is None else config.statistics.fdr_method.value,
-        },
+        analysis_hash,
+        _statistics_cache_params(config, predictor_columns=predictor_columns, target="delta_norm"),
     )
     stats_payload = None
     if config.cache.enabled and config.cache.stages.statistics:

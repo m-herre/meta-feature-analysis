@@ -7,6 +7,7 @@ from typing import Any
 
 import pandas as pd
 
+from ..cache import metafeature_split_cache_dir
 from .irregularity import DEFAULT_IRREGULARITY_COMPONENTS, add_irregularity_proxy
 from .registry import extract_requested_metafeatures
 
@@ -32,8 +33,32 @@ def _metadata_task_id(row) -> int:
     raise ValueError("Task metadata must include either `tid` or `task_id`.")
 
 
+SPLIT_CACHE_HASH_COLUMN = "_cache_identity_hash"
+
+
 def _split_cache_path(cache_dir: Path, dataset: str, repeat: int, fold: int) -> Path:
-    return cache_dir / "metafeatures" / "splits" / f"{dataset}__r{repeat}__f{fold}.parquet"
+    return metafeature_split_cache_dir(cache_dir) / f"{dataset}__r{repeat}__f{fold}.parquet"
+
+
+def _metadata_split_dimensions(row) -> tuple[int | None, int | None]:
+    n_repeats = getattr(row, "n_repeats", None)
+    n_folds = getattr(row, "n_folds", None)
+    if n_repeats is None or n_folds is None:
+        return None, None
+    return int(n_repeats), int(n_folds)
+
+
+def _read_cached_split(split_path: Path, cache_identity: str) -> dict[str, float] | None:
+    cached = pd.read_parquet(split_path)
+    cached_hash = None
+    if SPLIT_CACHE_HASH_COLUMN in cached.columns:
+        cached_hash = cached[SPLIT_CACHE_HASH_COLUMN].iat[0]
+    elif "_feature_set_hash" in cached.columns:
+        cached_hash = cached["_feature_set_hash"].iat[0]
+    if cached_hash != cache_identity:
+        return None
+    drop_columns = [column for column in (SPLIT_CACHE_HASH_COLUMN, "_feature_set_hash") if column in cached.columns]
+    return cached.drop(columns=drop_columns).iloc[0].to_dict()
 
 
 def extract_split_metafeatures(
@@ -75,18 +100,18 @@ def build_metafeature_table(
     pymfe_groups: tuple[str, ...] = ("general", "statistical", "info-theory"),
     pymfe_summary: tuple[str, ...] = ("mean", "sd"),
     irregularity_components: tuple[str, ...] = DEFAULT_IRREGULARITY_COMPONENTS,
+    cache_version: int | None = None,
 ) -> pd.DataFrame:
     """Compute or load per-split meta-features for every requested dataset."""
-    from tabarena.benchmark.task.openml import OpenMLTaskWrapper
-
     cache_root = Path(cache_dir)
     cache_root.mkdir(parents=True, exist_ok=True)
-    feature_hash = _stable_feature_hash(
+    cache_identity = _stable_feature_hash(
         {
             "feature_sets": feature_sets,
             "pymfe_groups": pymfe_groups,
             "pymfe_summary": pymfe_summary,
             "irregularity_components": irregularity_components,
+            "cache_version": cache_version,
         }
     )
     metadata_subset = metadata.copy()
@@ -100,19 +125,31 @@ def build_metafeature_table(
     rows: list[dict[str, float]] = []
     for row in metadata_subset.itertuples(index=False):
         dataset = _metadata_dataset_name(row)
-        task = OpenMLTaskWrapper.from_task_id(_metadata_task_id(row))
-        n_repeats, n_folds, n_samples = task.get_split_dimensions()
-        if n_samples != 1:
-            raise ValueError("Expected exactly one sample per (repeat, fold) split.")
+        n_repeats, n_folds = _metadata_split_dimensions(row)
+        task = None
+        if n_repeats is None or n_folds is None:
+            from tabarena.benchmark.task.openml import OpenMLTaskWrapper
+
+            task = OpenMLTaskWrapper.from_task_id(_metadata_task_id(row))
+            n_repeats, n_folds, n_samples = task.get_split_dimensions()
+            if n_samples != 1:
+                raise ValueError("Expected exactly one sample per (repeat, fold) split.")
         for repeat in range(n_repeats):
             for fold in range(n_folds):
                 split_path = _split_cache_path(cache_root, dataset, repeat, fold)
                 if use_cache and split_path.exists():
-                    cached = pd.read_parquet(split_path)
-                    if cached["_feature_set_hash"].iat[0] == feature_hash:
-                        rows.append(cached.drop(columns=["_feature_set_hash"]).iloc[0].to_dict())
+                    cached_row = _read_cached_split(split_path, cache_identity)
+                    if cached_row is not None:
+                        rows.append(cached_row)
                         continue
 
+                if task is None:
+                    from tabarena.benchmark.task.openml import OpenMLTaskWrapper
+
+                    task = OpenMLTaskWrapper.from_task_id(_metadata_task_id(row))
+                    _, _, n_samples = task.get_split_dimensions()
+                    if n_samples != 1:
+                        raise ValueError("Expected exactly one sample per (repeat, fold) split.")
                 split_row = extract_split_metafeatures(
                     task,
                     dataset,
@@ -125,7 +162,7 @@ def build_metafeature_table(
                 rows.append(split_row)
                 if use_cache:
                     split_path.parent.mkdir(parents=True, exist_ok=True)
-                    cached_row = pd.DataFrame([{**split_row, "_feature_set_hash": feature_hash}])
+                    cached_row = pd.DataFrame([{**split_row, SPLIT_CACHE_HASH_COLUMN: cache_identity}])
                     cached_row.to_parquet(split_path, index=False)
 
     metafeature_table = pd.DataFrame(rows)
@@ -140,4 +177,3 @@ __all__ = [
     "build_metafeature_table",
     "extract_split_metafeatures",
 ]
-

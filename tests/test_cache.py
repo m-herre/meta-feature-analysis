@@ -8,6 +8,7 @@ import pytest
 from mfa.cache import (
     compute_config_hash,
     invalidate_downstream,
+    metafeature_split_cache_dir,
     read_dataframe_cache,
     read_json_cache,
     write_dataframe_cache,
@@ -46,3 +47,10 @@ def test_invalidate_downstream(tmp_path: Path) -> None:
     assert not (tmp_path / "stage3_gaps").exists()
     assert not (tmp_path / "stage5_statistics").exists()
 
+
+def test_invalidate_downstream_clears_split_metafeature_cache(tmp_path: Path) -> None:
+    split_dir = metafeature_split_cache_dir(tmp_path)
+    split_dir.mkdir(parents=True)
+    (split_dir / "dataset_a__r0__f0.parquet").write_text("placeholder", encoding="utf-8")
+    invalidate_downstream(tmp_path, from_stage=2)
+    assert not split_dir.exists()

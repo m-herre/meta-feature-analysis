@@ -6,19 +6,108 @@ from pathlib import Path
 import pandas as pd
 
 from mfa.pipeline import run_analysis
-from mfa.types import AnalysisResult, CorrectionResult, CorrelationResult
+from mfa.stats.correlation import correlate_all as real_correlate_all
+from mfa.types import AnalysisResult
 
 
-def test_run_analysis_integration(analysis_config, monkeypatch, tmp_path: Path) -> None:
-    config = analysis_config
-    config = replace(config, cache=replace(config.cache, enabled=False, directory=tmp_path))
+class FakeTabArenaContext:
+    def __init__(self, frame: pd.DataFrame):
+        self.frame = frame
+        self.methods = ["artifact_a"]
+        self.calls = 0
 
+    def load_hpo_results(self, method: str, holdout: bool = False) -> pd.DataFrame:
+        self.calls += 1
+        return self.frame.copy()
+
+
+def test_run_analysis_reuses_upstream_caches_across_stats_changes(
+    analysis_config,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = replace(analysis_config, cache=replace(analysis_config.cache, enabled=True, directory=tmp_path))
+    raw_results = pd.DataFrame(
+        {
+            "dataset": ["dataset_a", "dataset_a", "dataset_b", "dataset_b"],
+            "fold": [0, 0, 0, 0],
+            "method": ["nn_alpha", "gbdt_alpha", "nn_alpha", "gbdt_alpha"],
+            "metric_error": [0.20, 0.10, 0.18, 0.12],
+            "metric_error_val": [0.21, 0.11, 0.19, 0.13],
+            "config_type": ["NN_A", "GBDT_A", "NN_A", "GBDT_A"],
+            "method_subtype": ["tuned", "tuned", "tuned", "tuned"],
+            "method_metadata": [{"nested": True}] * 4,
+        }
+    )
+    metafeatures = pd.DataFrame(
+        {
+            "dataset": ["dataset_a", "dataset_b"],
+            "repeat": [0, 0],
+            "fold": [0, 0],
+            "log_n": [2.0, 2.2],
+            "n_over_d": [10.0, 12.0],
+            "irregularity": [0.4, 0.6],
+        }
+    )
+    task_metadata = pd.DataFrame({"dataset": ["dataset_a", "dataset_b"], "tid": [1, 2]})
+    context = FakeTabArenaContext(raw_results)
+    metafeature_calls = {"count": 0}
+    correlation_calls = {"count": 0}
+
+    def fake_build_metafeature_table(*args, **kwargs) -> pd.DataFrame:
+        metafeature_calls["count"] += 1
+        return metafeatures.copy()
+
+    def counting_correlate_all(*args, **kwargs):
+        correlation_calls["count"] += 1
+        return real_correlate_all(*args, **kwargs)
+
+    monkeypatch.setattr("mfa.pipeline.build_metafeature_table", fake_build_metafeature_table)
+    monkeypatch.setattr("mfa.pipeline.correlate_all", counting_correlate_all)
+
+    result_first = run_analysis(
+        config,
+        datasets=["dataset_a", "dataset_b"],
+        task_metadata=task_metadata,
+        tabarena_context=context,
+    )
+    result_second = run_analysis(
+        config,
+        datasets=["dataset_a", "dataset_b"],
+        task_metadata=task_metadata,
+        tabarena_context=context,
+    )
+    config_alpha = replace(config, statistics=replace(config.statistics, alpha=0.10))
+    result_third = run_analysis(
+        config_alpha,
+        datasets=["dataset_a", "dataset_b"],
+        task_metadata=task_metadata,
+        tabarena_context=context,
+    )
+
+    assert isinstance(result_first, AnalysisResult)
+    assert not result_first.gap_table.empty
+    assert not result_first.analysis_table.empty
+    assert context.calls == 1
+    assert metafeature_calls["count"] == 1
+    assert correlation_calls["count"] == 2
+    assert result_second.analysis_table.equals(result_first.analysis_table)
+    assert result_third.correction_result is not None
+    assert result_third.correction_result.alpha == 0.10
+
+
+def test_run_analysis_handles_empty_comparisons_without_crashing(
+    analysis_config,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = replace(analysis_config, cache=replace(analysis_config.cache, enabled=False, directory=tmp_path))
     raw_results = pd.DataFrame(
         {
             "dataset": ["dataset_a"],
             "fold": [0],
             "method": ["nn_alpha"],
-            "metric_error": [0.2],
+            "metric_error": [0.20],
             "metric_error_val": [0.21],
             "config_type": ["NN_A"],
             "method_subtype": ["tuned"],
@@ -31,57 +120,21 @@ def test_run_analysis_integration(analysis_config, monkeypatch, tmp_path: Path) 
             "fold": [0],
             "log_n": [2.0],
             "n_over_d": [10.0],
-            "irregularity": [0.5],
+            "irregularity": [0.4],
         }
     )
-    gaps = pd.DataFrame(
-        {
-            "dataset": ["dataset_a"],
-            "repeat": [0],
-            "fold": [0],
-            "comparison_name": ["nn_vs_gbdt"],
-            "group_a_name": ["nn"],
-            "group_b_name": ["gbdt"],
-            "group_a_label": ["NN"],
-            "group_b_label": ["GBDT"],
-            "best_a_method": ["nn_alpha"],
-            "best_a_error": [0.2],
-            "best_a_norm_error": [0.5],
-            "best_b_method": ["gbdt_alpha"],
-            "best_b_error": [0.1],
-            "best_b_norm_error": [0.0],
-            "delta_raw": [0.1],
-            "delta_norm": [0.5],
-        }
-    )
-    analysis_table = pd.DataFrame(
-        {
-            "dataset": ["dataset_a"],
-            "comparison_name": ["nn_vs_gbdt"],
-            "group_a_name": ["nn"],
-            "group_b_name": ["gbdt"],
-            "group_a_label": ["NN"],
-            "group_b_label": ["GBDT"],
-            "n_splits": [1],
-            "delta_norm": [0.5],
-            "log_n": [2.0],
-            "n_over_d": [10.0],
-            "irregularity": [0.5],
-        }
-    )
-    correlations = [CorrelationResult("nn_vs_gbdt", "log_n", "delta_norm", 1.0, 0.01, 5)]
-    correction = CorrectionResult("bh", 0.05, tuple(correlations), (0.01,), (True,))
+    task_metadata = pd.DataFrame({"dataset": ["dataset_a"], "tid": [1]})
+    context = FakeTabArenaContext(raw_results)
+    monkeypatch.setattr("mfa.pipeline.build_metafeature_table", lambda *args, **kwargs: metafeatures.copy())
 
-    monkeypatch.setattr("mfa.pipeline.load_tabarena_results", lambda *args, **kwargs: raw_results)
-    monkeypatch.setattr("mfa.pipeline._get_task_metadata", lambda *args, **kwargs: pd.DataFrame({"dataset": ["dataset_a"], "tid": [1]}))
-    monkeypatch.setattr("mfa.pipeline.build_metafeature_table", lambda *args, **kwargs: metafeatures)
-    monkeypatch.setattr("mfa.pipeline.compute_pairwise_gaps", lambda *args, **kwargs: gaps)
-    monkeypatch.setattr("mfa.pipeline.build_analysis_table", lambda *args, **kwargs: analysis_table)
-    monkeypatch.setattr("mfa.pipeline.correlate_all", lambda *args, **kwargs: correlations)
-    monkeypatch.setattr("mfa.pipeline.apply_fdr_correction", lambda *args, **kwargs: correction)
+    result = run_analysis(
+        config,
+        datasets=["dataset_a"],
+        task_metadata=task_metadata,
+        tabarena_context=context,
+    )
 
-    result = run_analysis(config, datasets=["dataset_a"])
-    assert isinstance(result, AnalysisResult)
-    assert result.gap_table.equals(gaps)
-    assert result.analysis_table.equals(analysis_table)
-    assert result.correction_result == correction
+    assert result.gap_table.empty
+    assert result.analysis_table.empty
+    assert result.correction_result is not None
+    assert all(item.n_observations == 0 for item in result.correlation_results)

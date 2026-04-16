@@ -21,10 +21,15 @@ def apply_fdr_correction(
     if method is None:
         return None
     results = tuple(results)
-    valid_indices = [idx for idx, result in enumerate(results) if not np.isnan(result.p_value)]
     adjusted = [np.nan] * len(results)
     rejected = [False] * len(results)
-    if valid_indices:
+    grouped_indices: dict[str, list[int]] = {}
+    for idx, result in enumerate(results):
+        grouped_indices.setdefault(result.comparison_name, []).append(idx)
+    for comparison_indices in grouped_indices.values():
+        valid_indices = [idx for idx in comparison_indices if not np.isnan(results[idx].p_value)]
+        if not valid_indices:
+            continue
         valid_p_values = [results[idx].p_value for idx in valid_indices]
         reject_subset, adjusted_subset, _, _ = multipletests(valid_p_values, alpha=alpha, method=MULTITEST_MAP[method])
         for idx, adjusted_p, reject in zip(valid_indices, adjusted_subset, reject_subset):
@@ -37,4 +42,3 @@ def apply_fdr_correction(
         adjusted_p_values=tuple(adjusted),
         rejected=tuple(rejected),
     )
-
