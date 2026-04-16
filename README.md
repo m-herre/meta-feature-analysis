@@ -217,6 +217,13 @@ Categorical handling note:
 - `irregularity` runs on numeric columns only.
 - `pymfe` internally converts categorical columns to category codes before extraction.
 
+Missing-value handling for `pymfe`:
+- `pymfe` does not receive raw missing values from the training split.
+- Missing categorical values are filled with that column's mode, then the column is encoded as pandas category codes.
+- Remaining columns are coerced to numeric, and missing numeric values are filled with that column's median.
+- This preprocessing is only for `pymfe` extraction. The `basic` feature set still computes `missing_fraction` from the original, non-imputed training split.
+- Some extracted `pymfe__*` values can still be `NaN` if `pymfe` cannot compute or summarize a feature after preprocessing.
+
 Available irregularity components (all included by default):
 - `irreg_min_cov_eig` — minimum covariance eigenvalue
 - `irreg_std_skew` — standard deviation of feature skewness
@@ -282,7 +289,7 @@ For each configured comparison (`group_a` vs `group_b`), the package runs:
 4. **Compute split-level meta-features**
    - `basic`: `n`, `d`, `log_n`, `n_over_d`, `cat_fraction`, `missing_fraction`.
    - `irregularity`: component statistics on numeric columns, then a z-score-based irregularity proxy.
-   - `pymfe` (optional): extracted through `pymfe` when enabled.
+   - `pymfe` (optional): extracted through `pymfe` when enabled, after filling categorical missings with the mode, numeric missings with the median, and encoding categorical columns as integer codes.
 
 5. **Join and aggregate analysis table**
    - Merges meta-features with gap rows on `(dataset, repeat, fold)`.
