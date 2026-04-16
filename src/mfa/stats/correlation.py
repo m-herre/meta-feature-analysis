@@ -58,9 +58,17 @@ def bootstrap_correlation_ci(
     method: CorrelationMethod,
     n_bootstrap: int,
     confidence_level: float,
+    expected_direction: str | None = None,
     random_state: int = 0,
 ) -> tuple[float | None, float | None]:
-    """Bootstrap a percentile confidence interval for the correlation coefficient."""
+    """Bootstrap a percentile confidence interval for the correlation coefficient.
+
+    When *expected_direction* is set the CI is one-sided to match the
+    one-sided p-value:
+      - "positive" → [alpha-percentile, None]  (lower bound only)
+      - "negative" → [None, (1-alpha)-percentile]  (upper bound only)
+    When *expected_direction* is None the CI is the usual two-sided interval.
+    """
     if len(x) < 3:
         return None, None
     rng = np.random.default_rng(random_state)
@@ -75,6 +83,10 @@ def bootstrap_correlation_ci(
     if not stats:
         return None, None
     alpha = 1 - confidence_level
+    if expected_direction == "positive":
+        return float(np.quantile(stats, alpha)), None
+    if expected_direction == "negative":
+        return None, float(np.quantile(stats, 1 - alpha))
     return (
         float(np.quantile(stats, alpha / 2)),
         float(np.quantile(stats, 1 - (alpha / 2))),
@@ -130,6 +142,7 @@ def correlate_all(
                     method=method,
                     n_bootstrap=ci_bootstrap_samples,
                     confidence_level=ci_confidence_level,
+                    expected_direction=comparison.expected_direction,
                     random_state=random_state,
                 )
             results.append(
