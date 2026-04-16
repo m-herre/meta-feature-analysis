@@ -123,6 +123,8 @@ result = run_analysis(config, datasets=["diabetes", "credit-g"])
 Reference notebooks:
 - `notebooks/01_gbdt_vs_nn.ipynb`
 - `notebooks/02_custom_comparison.ipynb`
+- `notebooks/03_hypothesis_check_nn_vs_gbdt.ipynb`
+- `notebooks/04_methodology_walkthrough.ipynb`
 
 ---
 

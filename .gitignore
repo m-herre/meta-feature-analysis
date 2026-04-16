@@ -13,6 +13,6 @@ dist/
 *.egg-info/
 
 .mfa_cache/
-.mfa_cache_livecheck/
+.mfa_cache_tutorial/
 
 std.out
