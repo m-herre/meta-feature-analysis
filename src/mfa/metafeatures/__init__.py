@@ -2,14 +2,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from .._logging import get_logger
 from ..cache import metafeature_split_cache_dir
 from .irregularity import DEFAULT_IRREGULARITY_COMPONENTS, add_irregularity_proxy
 from .registry import extract_requested_metafeatures
+
+logger = get_logger(__name__)
+
+
+def _format_elapsed(seconds: float) -> str:
+    total_seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
 def _stable_feature_hash(payload: dict[str, Any]) -> str:
@@ -103,6 +114,7 @@ def build_metafeature_table(
     cache_version: int | None = None,
 ) -> pd.DataFrame:
     """Compute or load per-split meta-features for every requested dataset."""
+    overall_start = time.perf_counter()
     cache_root = Path(cache_dir)
     cache_root.mkdir(parents=True, exist_ok=True)
     cache_identity = _stable_feature_hash(
@@ -122,8 +134,16 @@ def build_metafeature_table(
             .any(axis=1)
         ].copy()
 
+    logger.info(
+        "Meta-features: preparing %d dataset(s) with feature_sets=%s",
+        len(metadata_subset),
+        ",".join(feature_sets),
+    )
     rows: list[dict[str, float]] = []
-    for row in metadata_subset.itertuples(index=False):
+    total_cached_splits = 0
+    total_computed_splits = 0
+    total_datasets = len(metadata_subset)
+    for dataset_index, row in enumerate(metadata_subset.itertuples(index=False), start=1):
         dataset = _metadata_dataset_name(row)
         n_repeats, n_folds = _metadata_split_dimensions(row)
         task = None
@@ -134,6 +154,18 @@ def build_metafeature_table(
             n_repeats, n_folds, n_samples = task.get_split_dimensions()
             if n_samples != 1:
                 raise ValueError("Expected exactly one sample per (repeat, fold) split.")
+        n_splits = n_repeats * n_folds
+        dataset_cached_splits = 0
+        dataset_computed_splits = 0
+        logger.info(
+            "Meta-features [%d/%d] %s: starting (%d split(s); elapsed %s)",
+            dataset_index,
+            total_datasets,
+            dataset,
+            n_splits,
+            _format_elapsed(time.perf_counter() - overall_start),
+        )
+        dataset_start = time.perf_counter()
         for repeat in range(n_repeats):
             for fold in range(n_folds):
                 split_path = _split_cache_path(cache_root, dataset, repeat, fold)
@@ -141,6 +173,7 @@ def build_metafeature_table(
                     cached_row = _read_cached_split(split_path, cache_identity)
                     if cached_row is not None:
                         rows.append(cached_row)
+                        dataset_cached_splits += 1
                         continue
 
                 if task is None:
@@ -160,14 +193,34 @@ def build_metafeature_table(
                     pymfe_summary=pymfe_summary,
                 )
                 rows.append(split_row)
+                dataset_computed_splits += 1
                 if use_cache:
                     split_path.parent.mkdir(parents=True, exist_ok=True)
                     cached_row = pd.DataFrame([{**split_row, SPLIT_CACHE_HASH_COLUMN: cache_identity}])
                     cached_row.to_parquet(split_path, index=False)
+        total_cached_splits += dataset_cached_splits
+        total_computed_splits += dataset_computed_splits
+        logger.info(
+            "Meta-features [%d/%d] %s: done in %s (%d cached, %d computed; total elapsed %s)",
+            dataset_index,
+            total_datasets,
+            dataset,
+            _format_elapsed(time.perf_counter() - dataset_start),
+            dataset_cached_splits,
+            dataset_computed_splits,
+            _format_elapsed(time.perf_counter() - overall_start),
+        )
 
     metafeature_table = pd.DataFrame(rows)
     if not metafeature_table.empty:
         metafeature_table = metafeature_table.sort_values(["dataset", "repeat", "fold"]).reset_index(drop=True)
+    logger.info(
+        "Meta-features: complete in %s (%d rows; %d cached split(s), %d computed split(s))",
+        _format_elapsed(time.perf_counter() - overall_start),
+        len(metafeature_table),
+        total_cached_splits,
+        total_computed_splits,
+    )
     if "irregularity" not in metafeature_table.columns and "irregularity" not in feature_sets:
         return metafeature_table
     return add_irregularity_proxy(metafeature_table, components=irregularity_components)

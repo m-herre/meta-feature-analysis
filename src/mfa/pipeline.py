@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import pandas as pd
+
+from ._logging import get_logger
 from .aggregation import build_analysis_table
 from .cache import (
     compute_config_hash,
@@ -20,6 +23,34 @@ from .stats.correction import apply_fdr_correction
 from .stats.correlation import correlate_all
 from .stats.multivariate import run_multivariate
 from .types import AnalysisResult, CorrectionResult, CorrelationResult, MultivariateResult
+
+logger = get_logger(__name__)
+
+
+def _dataset_scope_label(datasets: Sequence[str] | None) -> str:
+    if datasets is None:
+        return "all benchmark datasets"
+    return f"{len(datasets)} selected dataset(s)"
+
+
+def _frame_summary(df: pd.DataFrame) -> str:
+    parts = [f"{len(df)} rows"]
+    if "dataset" in df.columns:
+        parts.append(f"{df['dataset'].nunique()} dataset(s)")
+    return ", ".join(parts)
+
+
+def _statistics_summary(
+    correlation_results: Sequence[CorrelationResult],
+    correction_result: CorrectionResult | None,
+    multivariate_result: MultivariateResult | None,
+) -> str:
+    parts = [f"{len(correlation_results)} correlation test(s)"]
+    if correction_result is not None:
+        parts.append(f"{sum(correction_result.rejected)} rejected after {correction_result.method}")
+    if multivariate_result is not None:
+        parts.append("multivariate model fitted")
+    return ", ".join(parts)
 
 
 def _get_task_metadata(task_metadata=None):
@@ -166,6 +197,14 @@ def run_analysis(
     cache_version_hash = _cache_version_hash(config)
     cache_dir = config.cache.directory
     dataset_list = sorted(datasets) if datasets is not None else None
+    comparison_names = ", ".join(comparison.name for comparison in config.comparisons)
+    logger.info(
+        "Starting analysis: comparisons=%s; scope=%s; unit=%s; method_variant=%s",
+        comparison_names,
+        _dataset_scope_label(dataset_list),
+        config.analysis.unit.value,
+        config.analysis.method_variant,
+    )
 
     raw_hash = compute_stage_hash(
         "raw_results",
@@ -181,7 +220,10 @@ def run_analysis(
     raw_results = None
     if config.cache.enabled and config.cache.stages.raw_results:
         raw_results = read_dataframe_cache(cache_dir, 1, "raw_results", raw_hash)
+        if raw_results is not None:
+            logger.info("Stage 1/5 raw results: cache hit (%s)", _frame_summary(raw_results))
     if raw_results is None:
+        logger.info("Stage 1/5 raw results: loading from TabArena")
         raw_results = load_tabarena_results(
             config,
             datasets=dataset_list,
@@ -189,6 +231,7 @@ def run_analysis(
         )
         if config.cache.enabled and config.cache.stages.raw_results:
             write_dataframe_cache(raw_results, cache_dir, 1, "raw_results", raw_hash)
+        logger.info("Stage 1/5 raw results: ready (%s)", _frame_summary(raw_results))
 
     validate_groups_against_data(raw_results, config.groups)
 
@@ -207,7 +250,10 @@ def run_analysis(
     metafeature_table = None
     if config.cache.enabled and config.cache.stages.metafeatures:
         metafeature_table = read_dataframe_cache(cache_dir, 2, "metafeatures", metafeature_hash)
+        if metafeature_table is not None:
+            logger.info("Stage 2/5 meta-features: cache hit (%s)", _frame_summary(metafeature_table))
     if metafeature_table is None:
+        logger.info("Stage 2/5 meta-features: building for %s", _dataset_scope_label(dataset_list))
         metafeature_table = build_metafeature_table(
             metadata,
             datasets=None if dataset_list is None else list(dataset_list),
@@ -221,6 +267,7 @@ def run_analysis(
         )
         if config.cache.enabled and config.cache.stages.metafeatures:
             write_dataframe_cache(metafeature_table, cache_dir, 2, "metafeatures", metafeature_hash)
+        logger.info("Stage 2/5 meta-features: ready (%s)", _frame_summary(metafeature_table))
 
     gap_hash = compute_stage_hash(
         "gaps",
@@ -234,7 +281,10 @@ def run_analysis(
     gap_table = None
     if config.cache.enabled and config.cache.stages.gaps:
         gap_table = read_dataframe_cache(cache_dir, 3, "gaps", gap_hash)
+        if gap_table is not None:
+            logger.info("Stage 3/5 pairwise gaps: cache hit (%s)", _frame_summary(gap_table))
     if gap_table is None:
+        logger.info("Stage 3/5 pairwise gaps: computing %d comparison(s)", len(config.comparisons))
         gap_table = compute_pairwise_gaps(
             raw_results,
             config.comparisons,
@@ -243,12 +293,15 @@ def run_analysis(
         )
         if config.cache.enabled and config.cache.stages.gaps:
             write_dataframe_cache(gap_table, cache_dir, 3, "gaps", gap_hash)
+        logger.info("Stage 3/5 pairwise gaps: ready (%s)", _frame_summary(gap_table))
 
+    logger.info("Stage 4/5 analysis table: joining and aggregating at %s level", config.analysis.unit.value)
     analysis_table = build_analysis_table(
         gap_table,
         metafeature_table,
         unit=config.analysis.unit,
     )
+    logger.info("Stage 4/5 analysis table: ready (%s)", _frame_summary(analysis_table))
     predictor_columns = [
         column
         for column in metafeature_table.columns
@@ -268,8 +321,23 @@ def run_analysis(
     stats_payload = None
     if config.cache.enabled and config.cache.stages.statistics:
         stats_payload = read_json_cache(cache_dir, 5, "statistics", stats_hash)
+        if stats_payload is not None:
+            cached_correlation_results = [
+                _deserialize_correlation_result(item) for item in stats_payload["correlation_results"]
+            ]
+            cached_correction_result = _deserialize_correction_result(stats_payload["correction_result"])
+            cached_multivariate_result = _deserialize_multivariate_result(stats_payload["multivariate_result"])
+            logger.info(
+                "Stage 5/5 statistics: cache hit (%s)",
+                _statistics_summary(
+                    cached_correlation_results,
+                    cached_correction_result,
+                    cached_multivariate_result,
+                ),
+            )
 
     if stats_payload is None:
+        logger.info("Stage 5/5 statistics: running correlation tests")
         correlation_results = correlate_all(
             analysis_table,
             comparisons=config.comparisons,
@@ -301,11 +369,16 @@ def run_analysis(
         }
         if config.cache.enabled and config.cache.stages.statistics:
             write_json_cache(stats_payload, cache_dir, 5, "statistics", stats_hash)
+        logger.info(
+            "Stage 5/5 statistics: ready (%s)",
+            _statistics_summary(correlation_results, correction_result, multivariate_result),
+        )
     else:
         correlation_results = [_deserialize_correlation_result(item) for item in stats_payload["correlation_results"]]
         correction_result = _deserialize_correction_result(stats_payload["correction_result"])
         multivariate_result = _deserialize_multivariate_result(stats_payload["multivariate_result"])
 
+    logger.info("Analysis complete: config_hash=%s", config_hash)
     return AnalysisResult(
         config_hash=config_hash,
         comparison_name=config.comparisons[0].name if len(config.comparisons) == 1 else None,

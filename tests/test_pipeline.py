@@ -197,3 +197,56 @@ def test_run_analysis_invalidates_raw_cache_when_metric_columns_change(
     assert context.calls == 2
     assert not result_first.gap_table.empty
     assert not result_second.gap_table.empty
+
+
+def test_run_analysis_logs_stage_progress(
+    analysis_config,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = replace(analysis_config, cache=replace(analysis_config.cache, enabled=False, directory=tmp_path))
+    raw_results = pd.DataFrame(
+        {
+            "dataset": ["dataset_a", "dataset_a", "dataset_b", "dataset_b"],
+            "fold": [0, 0, 0, 0],
+            "method": ["nn_alpha", "gbdt_alpha", "nn_alpha", "gbdt_alpha"],
+            "metric_error": [0.20, 0.10, 0.18, 0.12],
+            "metric_error_val": [0.21, 0.11, 0.19, 0.13],
+            "config_type": ["NN_A", "GBDT_A", "NN_A", "GBDT_A"],
+            "method_subtype": ["tuned", "tuned", "tuned", "tuned"],
+        }
+    )
+    metafeatures = pd.DataFrame(
+        {
+            "dataset": ["dataset_a", "dataset_b"],
+            "repeat": [0, 0],
+            "fold": [0, 0],
+            "log_n": [2.0, 2.2],
+            "n_over_d": [10.0, 12.0],
+            "irregularity": [0.4, 0.6],
+        }
+    )
+    task_metadata = pd.DataFrame({"dataset": ["dataset_a", "dataset_b"], "tid": [1, 2]})
+    context = FakeTabArenaContext(raw_results)
+    messages: list[str] = []
+
+    def capture_info(message: str, *args) -> None:
+        messages.append(message % args if args else message)
+
+    monkeypatch.setattr("mfa.pipeline.build_metafeature_table", lambda *args, **kwargs: metafeatures.copy())
+    monkeypatch.setattr("mfa.pipeline.logger.info", capture_info)
+
+    run_analysis(
+        config,
+        datasets=["dataset_a", "dataset_b"],
+        task_metadata=task_metadata,
+        tabarena_context=context,
+    )
+
+    assert any("Starting analysis:" in message for message in messages)
+    assert any("Stage 1/5 raw results:" in message for message in messages)
+    assert any("Stage 2/5 meta-features:" in message for message in messages)
+    assert any("Stage 3/5 pairwise gaps:" in message for message in messages)
+    assert any("Stage 4/5 analysis table:" in message for message in messages)
+    assert any("Stage 5/5 statistics:" in message for message in messages)
+    assert any("Analysis complete:" in message for message in messages)
