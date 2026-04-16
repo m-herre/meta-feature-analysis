@@ -54,6 +54,8 @@ def pick_best_in_group(
     prefix: str,
     error_column: str = "metric_error",
     norm_error_column: str = "norm_error",
+    output_error_column: str | None = None,
+    output_norm_error_column: str | None = None,
 ) -> pd.DataFrame:
     """Pick the best-performing method inside a config-type group per split."""
     group_cols = ["dataset", "repeat", "fold_in_repeat"]
@@ -62,14 +64,16 @@ def pick_best_in_group(
         return pd.DataFrame(
             columns=SPLIT_KEY_COLUMNS + [f"best_{prefix}_method", f"best_{prefix}_error", f"best_{prefix}_norm_error"]
         )
+    selected_error_column = error_column if output_error_column is None else output_error_column
+    selected_norm_error_column = norm_error_column if output_norm_error_column is None else output_norm_error_column
     family = family.sort_values(group_cols + [norm_error_column, error_column, "method"])
     family = family.groupby(group_cols, as_index=False).first()
-    family = family[group_cols + ["method", error_column, norm_error_column]].rename(
+    family = family[group_cols + ["method", selected_error_column, selected_norm_error_column]].rename(
         columns={
             "fold_in_repeat": "fold",
             "method": f"best_{prefix}_method",
-            error_column: f"best_{prefix}_error",
-            norm_error_column: f"best_{prefix}_norm_error",
+            selected_error_column: f"best_{prefix}_error",
+            selected_norm_error_column: f"best_{prefix}_norm_error",
         }
     )
     return family.reset_index(drop=True)
@@ -80,14 +84,30 @@ def compute_pairwise_gaps(
     comparisons: tuple[ComparisonSpec, ...] | list[ComparisonSpec],
     *,
     error_column: str = "metric_error",
+    selection_error_column: str | None = None,
     n_folds_per_repeat: int = 3,
 ) -> pd.DataFrame:
     """Compute per-split pairwise group gaps for all configured comparisons."""
     if df_results.empty:
         return _empty_gap_table()
 
+    selection_error_column = error_column if selection_error_column is None else selection_error_column
     prepared = add_split_columns(df_results, n_folds_per_repeat=n_folds_per_repeat)
-    prepared = add_normalized_error(prepared, error_column=error_column, fold_column="split_id")
+    prepared = add_normalized_error(
+        prepared,
+        error_column=selection_error_column,
+        fold_column="split_id",
+        output_column="selection_norm_error",
+    )
+    if selection_error_column == error_column:
+        prepared["evaluation_norm_error"] = prepared["selection_norm_error"]
+    else:
+        prepared = add_normalized_error(
+            prepared,
+            error_column=error_column,
+            fold_column="split_id",
+            output_column="evaluation_norm_error",
+        )
     available_splits = _split_key_set(
         prepared[["dataset", "repeat", "fold_in_repeat"]].rename(columns={"fold_in_repeat": "fold"})
     )
@@ -98,13 +118,19 @@ def compute_pairwise_gaps(
             prepared,
             config_types=comparison.group_a.config_types,
             prefix="a",
-            error_column=error_column,
+            error_column=selection_error_column,
+            norm_error_column="selection_norm_error",
+            output_error_column=error_column,
+            output_norm_error_column="evaluation_norm_error",
         )
         best_b = pick_best_in_group(
             prepared,
             config_types=comparison.group_b.config_types,
             prefix="b",
-            error_column=error_column,
+            error_column=selection_error_column,
+            norm_error_column="selection_norm_error",
+            output_error_column=error_column,
+            output_norm_error_column="evaluation_norm_error",
         )
         missing_a = available_splits - _split_key_set(best_a)
         if missing_a:

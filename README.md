@@ -53,6 +53,7 @@ comparisons:
 analysis:
   unit: dataset
   error_column: metric_error
+  selection_error_column: metric_error
   method_variant: tuned
 
 metafeatures:
@@ -167,6 +168,8 @@ Important analysis options:
   - `dataset` (default): aggregate over splits before correlation.
   - `fold`: keep split-level rows (warning: folds are not independent observations).
 - `analysis.method_variant`: one of `default`, `tuned`, `tuned_ensemble`.
+- `analysis.error_column`: evaluation metric used for `delta_raw`/`delta_norm`.
+- `analysis.selection_error_column` (optional): metric used to pick split-level winners. If omitted, falls back to `analysis.error_column`.
 - `statistics.fdr_method`: `bh`, `holm`, or `null` (disable correction).
 - `statistics.multivariate`: only runs when exactly one comparison is configured.
 
@@ -183,13 +186,15 @@ For each configured comparison (`group_a` vs `group_b`), the package runs:
 
 2. **Decode splits and normalize errors**
    - Decodes TabArena fold index into `(repeat, fold_in_repeat)`.
-   - Computes `norm_error` with TabArena `NormalizedScorer` per `(dataset, split_id)`.
+   - Computes selection-time normalized errors from `analysis.selection_error_column` (or `analysis.error_column` if unset).
+   - Computes evaluation-time normalized errors from `analysis.error_column`.
 
 3. **Compute pairwise best-vs-best gaps per split**
-   - For each split, picks the best method inside each group (deterministic tie-break by normalized error, raw error, then method name).
+   - For each split, picks the best method inside each group using selection metric (deterministic tie-break by selection normalized error, selection raw error, then method name).
    - Computes:
-     - `delta_raw = best_a_error - best_b_error`
-     - `delta_norm = best_a_norm_error - best_b_norm_error`
+      - `delta_raw = best_a_error - best_b_error`
+      - `delta_norm = best_a_norm_error - best_b_norm_error`
+     where both deltas use the evaluation metric.
    - Positive deltas mean `group_a` has higher error than `group_b` for that split.
 
 4. **Compute split-level meta-features**

@@ -226,6 +226,7 @@ def run_analysis(
         {
             "comparisons": _comparison_cache_payload(config.comparisons),
             "error_column": config.analysis.error_column,
+            "selection_error_column": config.analysis.selection_error_column,
         },
     )
     gap_table = None
@@ -236,6 +237,7 @@ def run_analysis(
             raw_results,
             config.comparisons,
             error_column=config.analysis.error_column,
+            selection_error_column=config.analysis.selection_error_column,
         )
         if config.cache.enabled and config.cache.stages.gaps:
             write_dataframe_cache(gap_table, cache_dir, 3, "gaps", gap_hash)

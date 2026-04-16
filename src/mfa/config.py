@@ -20,6 +20,7 @@ class ConfigValidationError(ValueError):
 class AnalysisSettings:
     unit: AnalysisUnit = AnalysisUnit.DATASET
     error_column: str = "metric_error"
+    selection_error_column: str | None = None
     method_variant: str = "tuned"
     exclude_methods_containing: tuple[str, ...] = ()
 
@@ -154,12 +155,21 @@ def _parse_analysis(raw_analysis: Any) -> AnalysisSettings:
     if method_variant not in VALID_METHOD_VARIANTS:
         valid_variants = ", ".join(sorted(VALID_METHOD_VARIANTS))
         raise ConfigValidationError(f"`analysis.method_variant` must be one of: {valid_variants}.")
+    error_column = mapping.get("error_column", "metric_error")
+    if not isinstance(error_column, str) or not error_column:
+        raise ConfigValidationError("`analysis.error_column` must be a non-empty string.")
+    selection_error_column = mapping.get("selection_error_column", None)
+    if selection_error_column is not None and (
+        not isinstance(selection_error_column, str) or not selection_error_column
+    ):
+        raise ConfigValidationError("`analysis.selection_error_column` must be null or a non-empty string.")
     exclude_methods = tuple(mapping.get("exclude_methods_containing", []))
     if not all(isinstance(value, str) for value in exclude_methods):
         raise ConfigValidationError("`analysis.exclude_methods_containing` must be a list of strings.")
     return AnalysisSettings(
         unit=_parse_enum(AnalysisUnit, mapping.get("unit", AnalysisUnit.DATASET.value), "analysis.unit"),
-        error_column=mapping.get("error_column", "metric_error"),
+        error_column=error_column,
+        selection_error_column=selection_error_column,
         method_variant=method_variant,
         exclude_methods_containing=exclude_methods,
     )
@@ -246,4 +256,3 @@ def load_config(path: str | Path) -> AnalysisConfig:
     if not isinstance(raw_config, dict):
         raise ConfigValidationError("Top-level YAML document must be a mapping.")
     return parse_config(raw_config)
-

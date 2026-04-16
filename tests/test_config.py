@@ -35,6 +35,18 @@ def test_parse_config_rejects_unknown_method_variant(config_dict) -> None:
         parse_config(config_dict)
 
 
+def test_parse_config_accepts_optional_selection_error_column(config_dict) -> None:
+    config_dict["analysis"]["selection_error_column"] = "metric_error_val"
+    config = parse_config(config_dict)
+    assert config.analysis.selection_error_column == "metric_error_val"
+
+
+def test_parse_config_rejects_invalid_selection_error_column(config_dict) -> None:
+    config_dict["analysis"]["selection_error_column"] = 1
+    with pytest.raises(ConfigValidationError):
+        parse_config(config_dict)
+
+
 def test_config_hash_is_deterministic(analysis_config) -> None:
     left = compute_config_hash(analysis_config.to_dict())
     right = compute_config_hash(load_config(Path("configs/default.yaml")).to_dict())
@@ -43,4 +55,3 @@ def test_config_hash_is_deterministic(analysis_config) -> None:
     assert len(left) == 16
     assert left == compute_config_hash(analysis_config.to_dict())
     assert left != right
-
