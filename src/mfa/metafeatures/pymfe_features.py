@@ -26,6 +26,10 @@ def extract_pymfe_features(
             X_encoded[column] = X_encoded[column].fillna(X_encoded[column].mode().iloc[0])
         X_encoded[column] = X_encoded[column].astype("category").cat.codes
     X_encoded = X_encoded.apply(pd.to_numeric, errors="coerce")
+    numeric_columns = [column for column in X_encoded.columns if column not in categorical_columns]
+    if numeric_columns:
+        numeric_frame = X_encoded.loc[:, numeric_columns]
+        X_encoded.loc[:, numeric_columns] = numeric_frame.fillna(numeric_frame.median())
     categorical_indices = [X_encoded.columns.get_loc(column) for column in categorical_columns]
     mfe = MFE(groups=list(groups), summary=list(summary))
     mfe.fit(X_encoded.to_numpy(), None if y_train is None else y_train.to_numpy(), cat_cols=categorical_indices)
