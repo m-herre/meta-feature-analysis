@@ -100,5 +100,5 @@ def build_analysis_table(
         return analysis.sort_values(["comparison_name", "dataset", "repeat", "fold"]).reset_index(drop=True)
 
     aggregations = _build_aggregations(analysis, metafeature_table)
-    dataset_level = analysis.groupby(GROUP_COLUMNS, as_index=False).agg(**aggregations)
+    dataset_level = analysis.groupby(GROUP_COLUMNS, as_index=False, dropna=False).agg(**aggregations)
     return dataset_level.sort_values(["comparison_name", "dataset"]).reset_index(drop=True)
