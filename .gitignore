@@ -16,3 +16,5 @@ dist/
 .mfa_cache_tutorial/
 
 std.out
+
+logs/

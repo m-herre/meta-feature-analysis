@@ -55,3 +55,7 @@ cache:
     metafeatures: true
     gaps: true
     statistics: true
+
+parallelism:
+  n_jobs: -1
+  backend: process
