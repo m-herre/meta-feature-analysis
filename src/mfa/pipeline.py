@@ -13,13 +13,13 @@ from .cache import (
 )
 from .config import AnalysisConfig
 from .data.loader import load_tabarena_results
+from .gaps.pairwise import compute_pairwise_gaps
 from .groups import validate_groups_against_data
 from .metafeatures import build_metafeature_table
-from .stats.correlation import correlate_all
 from .stats.correction import apply_fdr_correction
+from .stats.correlation import correlate_all
 from .stats.multivariate import run_multivariate
-from .types import AnalysisResult, CorrelationResult, CorrectionResult, MultivariateResult
-from .gaps.pairwise import compute_pairwise_gaps
+from .types import AnalysisResult, CorrectionResult, CorrelationResult, MultivariateResult
 
 
 def _get_task_metadata(task_metadata=None):
@@ -174,6 +174,8 @@ def run_analysis(
             "datasets": dataset_list,
             "method_variant": config.analysis.method_variant,
             "exclude_methods_containing": config.analysis.exclude_methods_containing,
+            "error_column": config.analysis.error_column,
+            "selection_error_column": config.analysis.selection_error_column,
         },
     )
     raw_results = None

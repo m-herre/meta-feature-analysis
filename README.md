@@ -53,7 +53,7 @@ comparisons:
 analysis:
   unit: dataset
   error_column: metric_error
-  selection_error_column: metric_error
+  selection_error_column: metric_error_val
   method_variant: tuned
 
 metafeatures:
@@ -187,13 +187,15 @@ One or more pairwise comparisons between groups. `delta_norm = group_a_error - g
 |---|---|---|---|
 | `unit` | string | `dataset`, `fold` | `dataset` |
 | `error_column` | string | Any numeric column in TabArena results | `metric_error` |
-| `selection_error_column` | string or null | Any numeric column, or `null` to reuse `error_column` | `null` |
+| `selection_error_column` | string or null | Any numeric column, or `null` to reuse `error_column` | `metric_error_val` |
 | `method_variant` | string | `default`, `tuned`, `tuned_ensemble` | `tuned` |
 | `exclude_methods_containing` | list of strings | Substring patterns to exclude methods by name | `[]` |
 
 - `unit: dataset` aggregates folds to dataset-level means before correlation (recommended for formal inference).
 - `unit: fold` keeps every fold as a separate observation (inflates statistical power — folds share training data).
-- `selection_error_column` controls which metric picks the best method per split (val-based selection). `error_column` is used for the final evaluation (test-based).
+- `selection_error_column` controls which metric picks the best method per split (val-based selection). It defaults to `metric_error_val`.
+- `error_column` is used for the final evaluation (test-based).
+- Set `selection_error_column: null` only when you intentionally want selection and evaluation to use the same metric.
 
 ### `metafeatures`
 
@@ -256,11 +258,11 @@ For each configured comparison (`group_a` vs `group_b`), the package runs:
 1. **Load and filter TabArena results**
    - Loads HPO result frames per method from `tabarena_context`.
    - Filters by `method_subtype == analysis.method_variant`.
-   - Requires columns: `dataset`, `fold`, `method`, `metric_error`, `metric_error_val`, `config_type`, `method_subtype`.
+   - Requires identifier columns `dataset`, `fold`, `method`, `config_type`, `method_subtype`, plus whichever metric columns are configured in `error_column` and `selection_error_column`.
 
 2. **Decode splits and normalize errors**
    - Decodes TabArena fold index into `(repeat, fold_in_repeat)`.
-   - Computes selection-time normalized errors from `analysis.selection_error_column` (or `analysis.error_column` if unset).
+   - Computes selection-time normalized errors from `analysis.selection_error_column` (defaults to `metric_error_val`; falls back to `analysis.error_column` only when configured that way).
    - Computes evaluation-time normalized errors from `analysis.error_column`.
 
 3. **Compute pairwise best-vs-best gaps per split**

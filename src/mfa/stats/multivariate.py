@@ -61,7 +61,7 @@ def run_multivariate(
         r_squared = float(1 - residual_sum_squares / total_sum_squares) if total_sum_squares > 0 else np.nan
         coefficients = {
             column: float(value)
-            for column, value in zip(X.columns, coefficients_array)
+            for column, value in zip(X.columns, coefficients_array, strict=False)
         }
         p_values = {column: np.nan for column in X.columns}
         adj_r_squared = np.nan
@@ -76,4 +76,3 @@ def run_multivariate(
         vif=vif,
         n_observations=int(len(subset)),
     )
-

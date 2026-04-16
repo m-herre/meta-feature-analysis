@@ -20,7 +20,7 @@ class ConfigValidationError(ValueError):
 class AnalysisSettings:
     unit: AnalysisUnit = AnalysisUnit.DATASET
     error_column: str = "metric_error"
-    selection_error_column: str | None = None
+    selection_error_column: str | None = "metric_error_val"
     method_variant: str = "tuned"
     exclude_methods_containing: tuple[str, ...] = ()
 
@@ -158,7 +158,7 @@ def _parse_analysis(raw_analysis: Any) -> AnalysisSettings:
     error_column = mapping.get("error_column", "metric_error")
     if not isinstance(error_column, str) or not error_column:
         raise ConfigValidationError("`analysis.error_column` must be a non-empty string.")
-    selection_error_column = mapping.get("selection_error_column", None)
+    selection_error_column = mapping.get("selection_error_column", "metric_error_val")
     if selection_error_column is not None and (
         not isinstance(selection_error_column, str) or not selection_error_column
     ):

@@ -1,27 +1,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 import pandas as pd
 
 
-class AnalysisUnit(str, Enum):
+class AnalysisUnit(StrEnum):
     DATASET = "dataset"
     FOLD = "fold"
 
 
-class CorrelationMethod(str, Enum):
+class CorrelationMethod(StrEnum):
     SPEARMAN = "spearman"
     PEARSON = "pearson"
 
 
-class FDRMethod(str, Enum):
+class FDRMethod(StrEnum):
     BH = "bh"
     HOLM = "holm"
 
 
-class MultivariateMethod(str, Enum):
+class MultivariateMethod(StrEnum):
     OLS = "ols"
     RIDGE = "ridge"
 
@@ -85,4 +85,3 @@ class AnalysisResult:
     gap_table: pd.DataFrame
     metafeature_table: pd.DataFrame
     analysis_table: pd.DataFrame
-

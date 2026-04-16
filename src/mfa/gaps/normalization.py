@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pandas as pd
-
 from tabarena.utils.normalized_scorer import NormalizedScorer
 
 
@@ -38,7 +37,7 @@ def add_normalized_error(
             normalized[dataset_column],
             normalized[fold_column],
             normalized[error_column],
+            strict=False,
         )
     ]
     return normalized
-

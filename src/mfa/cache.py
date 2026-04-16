@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import asdict, is_dataclass
 import hashlib
 import json
-from pathlib import Path
 import shutil
+from dataclasses import asdict, is_dataclass
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -15,7 +15,7 @@ def _to_serializable(value: Any) -> Any:
         return _to_serializable(asdict(value))
     if isinstance(value, Path):
         return str(value)
-    if hasattr(value, "value") and isinstance(getattr(value, "value"), str):
+    if hasattr(value, "value") and isinstance(value.value, str):
         return value.value
     if isinstance(value, dict):
         return {str(key): _to_serializable(val) for key, val in sorted(value.items(), key=lambda item: str(item[0]))}

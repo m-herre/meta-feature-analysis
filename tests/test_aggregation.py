@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import numpy as np
-
 import pandas as pd
 
 from mfa.aggregation import build_analysis_table

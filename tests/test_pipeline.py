@@ -138,3 +138,62 @@ def test_run_analysis_handles_empty_comparisons_without_crashing(
     assert result.analysis_table.empty
     assert result.correction_result is not None
     assert all(item.n_observations == 0 for item in result.correlation_results)
+
+
+def test_run_analysis_invalidates_raw_cache_when_metric_columns_change(
+    analysis_config,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = replace(analysis_config, cache=replace(analysis_config.cache, enabled=True, directory=tmp_path))
+    config_alt_metrics = replace(
+        config,
+        analysis=replace(
+            config.analysis,
+            error_column="metric_error_alt",
+            selection_error_column="metric_error_val_alt",
+        ),
+    )
+    raw_results = pd.DataFrame(
+        {
+            "dataset": ["dataset_a", "dataset_a", "dataset_b", "dataset_b"],
+            "fold": [0, 0, 0, 0],
+            "method": ["nn_alpha", "gbdt_alpha", "nn_alpha", "gbdt_alpha"],
+            "metric_error": [0.20, 0.10, 0.18, 0.12],
+            "metric_error_val": [0.21, 0.11, 0.19, 0.13],
+            "metric_error_alt": [0.40, 0.30, 0.38, 0.32],
+            "metric_error_val_alt": [0.41, 0.31, 0.39, 0.33],
+            "config_type": ["NN_A", "GBDT_A", "NN_A", "GBDT_A"],
+            "method_subtype": ["tuned", "tuned", "tuned", "tuned"],
+        }
+    )
+    metafeatures = pd.DataFrame(
+        {
+            "dataset": ["dataset_a", "dataset_b"],
+            "repeat": [0, 0],
+            "fold": [0, 0],
+            "log_n": [2.0, 2.2],
+            "n_over_d": [10.0, 12.0],
+            "irregularity": [0.4, 0.6],
+        }
+    )
+    task_metadata = pd.DataFrame({"dataset": ["dataset_a", "dataset_b"], "tid": [1, 2]})
+    context = FakeTabArenaContext(raw_results)
+    monkeypatch.setattr("mfa.pipeline.build_metafeature_table", lambda *args, **kwargs: metafeatures.copy())
+
+    result_first = run_analysis(
+        config,
+        datasets=["dataset_a", "dataset_b"],
+        task_metadata=task_metadata,
+        tabarena_context=context,
+    )
+    result_second = run_analysis(
+        config_alt_metrics,
+        datasets=["dataset_a", "dataset_b"],
+        task_metadata=task_metadata,
+        tabarena_context=context,
+    )
+
+    assert context.calls == 2
+    assert not result_first.gap_table.empty
+    assert not result_second.gap_table.empty

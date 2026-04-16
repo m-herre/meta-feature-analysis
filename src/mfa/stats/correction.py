@@ -32,7 +32,7 @@ def apply_fdr_correction(
             continue
         valid_p_values = [results[idx].p_value for idx in valid_indices]
         reject_subset, adjusted_subset, _, _ = multipletests(valid_p_values, alpha=alpha, method=MULTITEST_MAP[method])
-        for idx, adjusted_p, reject in zip(valid_indices, adjusted_subset, reject_subset):
+        for idx, adjusted_p, reject in zip(valid_indices, adjusted_subset, reject_subset, strict=False):
             adjusted[idx] = float(adjusted_p)
             rejected[idx] = bool(reject)
     return CorrectionResult(

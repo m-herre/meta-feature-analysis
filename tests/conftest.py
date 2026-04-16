@@ -31,6 +31,7 @@ def config_dict() -> dict:
         "analysis": {
             "unit": "dataset",
             "error_column": "metric_error",
+            "selection_error_column": "metric_error_val",
             "method_variant": "tuned",
             "exclude_methods_containing": [],
         },
@@ -121,4 +122,3 @@ def synthetic_metafeatures() -> pd.DataFrame:
             "irregularity",
         ],
     )
-

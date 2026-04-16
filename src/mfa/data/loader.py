@@ -6,12 +6,10 @@ import pandas as pd
 
 from ..config import AnalysisConfig
 
-REQUIRED_RESULT_COLUMNS = [
+IDENTITY_RESULT_COLUMNS = [
     "dataset",
     "fold",
     "method",
-    "metric_error",
-    "metric_error_val",
     "config_type",
     "method_subtype",
 ]
@@ -21,12 +19,22 @@ def _filter_methods(methods: Sequence[str], exclude_patterns: Sequence[str]) -> 
     return [method for method in methods if all(pattern not in method for pattern in exclude_patterns)]
 
 
-def _sanitize_result_frame(df_results: pd.DataFrame) -> pd.DataFrame:
+def _required_result_columns(config: AnalysisConfig) -> list[str]:
+    columns = [
+        *IDENTITY_RESULT_COLUMNS,
+        config.analysis.error_column,
+    ]
+    if config.analysis.selection_error_column is not None:
+        columns.append(config.analysis.selection_error_column)
+    return list(dict.fromkeys(columns))
+
+
+def _sanitize_result_frame(df_results: pd.DataFrame, *, required_columns: Sequence[str]) -> pd.DataFrame:
     """Restrict raw results to the cache-safe schema used by the pipeline."""
-    missing_columns = [column for column in REQUIRED_RESULT_COLUMNS if column not in df_results.columns]
+    missing_columns = [column for column in required_columns if column not in df_results.columns]
     if missing_columns:
         raise ValueError(f"Loaded results are missing required columns: {missing_columns}")
-    return df_results.loc[:, REQUIRED_RESULT_COLUMNS].copy()
+    return df_results.loc[:, list(required_columns)].copy()
 
 
 def load_tabarena_results(
@@ -52,7 +60,7 @@ def load_tabarena_results(
         frames.append(frame)
 
     if not frames:
-        return pd.DataFrame(columns=REQUIRED_RESULT_COLUMNS)
+        return pd.DataFrame(columns=_required_result_columns(config))
 
     df_results = pd.concat(frames, ignore_index=True)
     if "method_subtype" not in df_results.columns:
@@ -65,4 +73,7 @@ def load_tabarena_results(
         dataset_set = set(datasets)
         df_results = df_results[df_results["dataset"].isin(dataset_set)].copy()
 
-    return _sanitize_result_frame(df_results).reset_index(drop=True)
+    return _sanitize_result_frame(
+        df_results,
+        required_columns=_required_result_columns(config),
+    ).reset_index(drop=True)
