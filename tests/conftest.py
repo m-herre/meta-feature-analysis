@@ -66,6 +66,10 @@ def config_dict() -> dict:
                 "statistics": True,
             },
         },
+        "parallelism": {
+            "n_jobs": 1,
+            "backend": "process",
+        },
     }
 
 

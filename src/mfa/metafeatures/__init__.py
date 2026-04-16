@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from concurrent.futures import as_completed
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ import pandas as pd
 
 from .._logging import get_logger
 from ..cache import metafeature_split_cache_dir
+from ..parallel import get_executor, resolve_n_jobs
 from .irregularity import DEFAULT_IRREGULARITY_COMPONENTS, add_irregularity_proxy
 from .registry import extract_requested_metafeatures
 
@@ -101,6 +103,70 @@ def extract_split_metafeatures(
     return features
 
 
+def _process_one_dataset(
+    dataset: str,
+    task_id: int,
+    n_repeats: int | None,
+    n_folds: int | None,
+    feature_sets: tuple[str, ...],
+    pymfe_groups: tuple[str, ...],
+    pymfe_summary: tuple[str, ...],
+    cache_root: str,
+    cache_identity: str,
+    use_cache: bool,
+) -> tuple[str, list[dict[str, float]], int, int, str | None]:
+    """Process all splits for one dataset. Returns (dataset, rows, n_cached, n_computed, error)."""
+    try:
+        cache_path = Path(cache_root)
+        task = None
+        if n_repeats is None or n_folds is None:
+            from tabarena.benchmark.task.openml import OpenMLTaskWrapper
+
+            task = OpenMLTaskWrapper.from_task_id(task_id)
+            n_repeats, n_folds, n_samples = task.get_split_dimensions()
+            if n_samples != 1:
+                raise ValueError("Expected exactly one sample per (repeat, fold) split.")
+
+        rows: list[dict[str, float]] = []
+        n_cached = 0
+        n_computed = 0
+        for repeat in range(n_repeats):
+            for fold in range(n_folds):
+                split_path = _split_cache_path(cache_path, dataset, repeat, fold)
+                if use_cache and split_path.exists():
+                    cached_row = _read_cached_split(split_path, cache_identity)
+                    if cached_row is not None:
+                        rows.append(cached_row)
+                        n_cached += 1
+                        continue
+
+                if task is None:
+                    from tabarena.benchmark.task.openml import OpenMLTaskWrapper
+
+                    task = OpenMLTaskWrapper.from_task_id(task_id)
+                    _, _, n_samples = task.get_split_dimensions()
+                    if n_samples != 1:
+                        raise ValueError("Expected exactly one sample per (repeat, fold) split.")
+                split_row = extract_split_metafeatures(
+                    task,
+                    dataset,
+                    repeat,
+                    fold,
+                    feature_sets=feature_sets,
+                    pymfe_groups=pymfe_groups,
+                    pymfe_summary=pymfe_summary,
+                )
+                rows.append(split_row)
+                n_computed += 1
+                if use_cache:
+                    split_path.parent.mkdir(parents=True, exist_ok=True)
+                    cached_row = pd.DataFrame([{**split_row, SPLIT_CACHE_HASH_COLUMN: cache_identity}])
+                    cached_row.to_parquet(split_path, index=False)
+        return dataset, rows, n_cached, n_computed, None
+    except Exception as exc:
+        return dataset, [], 0, 0, f"{type(exc).__name__}: {exc}"
+
+
 def build_metafeature_table(
     metadata: pd.DataFrame,
     *,
@@ -112,6 +178,8 @@ def build_metafeature_table(
     pymfe_summary: tuple[str, ...] = ("mean", "sd"),
     irregularity_components: tuple[str, ...] = DEFAULT_IRREGULARITY_COMPONENTS,
     cache_version: int | None = None,
+    n_jobs: int = 1,
+    backend: str = "process",
 ) -> pd.DataFrame:
     """Compute or load per-split meta-features for every requested dataset."""
     overall_start = time.perf_counter()
@@ -134,23 +202,89 @@ def build_metafeature_table(
             .any(axis=1)
         ].copy()
 
+    total_datasets = len(metadata_subset)
+    resolved_n_jobs = resolve_n_jobs(n_jobs)
+
     logger.info(
-        "Meta-features: preparing %d dataset(s) with feature_sets=%s",
-        len(metadata_subset),
+        "Meta-features: preparing %d dataset(s) with feature_sets=%s (n_jobs=%d)",
+        total_datasets,
         ",".join(feature_sets),
+        resolved_n_jobs,
     )
+
+    # Pre-extract dataset info for both sequential and parallel paths
+    dataset_tasks: list[tuple[str, int, int | None, int | None]] = []
+    for row in metadata_subset.itertuples(index=False):
+        dataset_tasks.append(
+            (
+                _metadata_dataset_name(row),
+                _metadata_task_id(row),
+                *_metadata_split_dimensions(row),
+            )
+        )
+
+    if resolved_n_jobs <= 1:
+        rows, total_cached_splits, total_computed_splits = _build_sequential(
+            dataset_tasks=dataset_tasks,
+            feature_sets=feature_sets,
+            pymfe_groups=pymfe_groups,
+            pymfe_summary=pymfe_summary,
+            cache_root=cache_root,
+            cache_identity=cache_identity,
+            use_cache=use_cache,
+            overall_start=overall_start,
+        )
+    else:
+        rows, total_cached_splits, total_computed_splits = _build_parallel(
+            dataset_tasks=dataset_tasks,
+            feature_sets=feature_sets,
+            pymfe_groups=pymfe_groups,
+            pymfe_summary=pymfe_summary,
+            cache_root=cache_root,
+            cache_identity=cache_identity,
+            use_cache=use_cache,
+            overall_start=overall_start,
+            n_jobs=resolved_n_jobs,
+            backend=backend,
+        )
+
+    metafeature_table = pd.DataFrame(rows)
+    if not metafeature_table.empty:
+        metafeature_table = metafeature_table.sort_values(["dataset", "repeat", "fold"]).reset_index(drop=True)
+    logger.info(
+        "Meta-features: complete in %s (%d rows; %d cached split(s), %d computed split(s))",
+        _format_elapsed(time.perf_counter() - overall_start),
+        len(metafeature_table),
+        total_cached_splits,
+        total_computed_splits,
+    )
+    if "irregularity" not in metafeature_table.columns and "irregularity" not in feature_sets:
+        return metafeature_table
+    return add_irregularity_proxy(metafeature_table, components=irregularity_components)
+
+
+def _build_sequential(
+    *,
+    dataset_tasks: list[tuple[str, int, int | None, int | None]],
+    feature_sets: tuple[str, ...],
+    pymfe_groups: tuple[str, ...],
+    pymfe_summary: tuple[str, ...],
+    cache_root: Path,
+    cache_identity: str,
+    use_cache: bool,
+    overall_start: float,
+) -> tuple[list[dict[str, float]], int, int]:
+    """Sequential per-dataset processing (original behavior)."""
     rows: list[dict[str, float]] = []
     total_cached_splits = 0
     total_computed_splits = 0
-    total_datasets = len(metadata_subset)
-    for dataset_index, row in enumerate(metadata_subset.itertuples(index=False), start=1):
-        dataset = _metadata_dataset_name(row)
-        n_repeats, n_folds = _metadata_split_dimensions(row)
+    total_datasets = len(dataset_tasks)
+    for dataset_index, (dataset, task_id, n_repeats, n_folds) in enumerate(dataset_tasks, start=1):
         task = None
         if n_repeats is None or n_folds is None:
             from tabarena.benchmark.task.openml import OpenMLTaskWrapper
 
-            task = OpenMLTaskWrapper.from_task_id(_metadata_task_id(row))
+            task = OpenMLTaskWrapper.from_task_id(task_id)
             n_repeats, n_folds, n_samples = task.get_split_dimensions()
             if n_samples != 1:
                 raise ValueError("Expected exactly one sample per (repeat, fold) split.")
@@ -179,7 +313,7 @@ def build_metafeature_table(
                 if task is None:
                     from tabarena.benchmark.task.openml import OpenMLTaskWrapper
 
-                    task = OpenMLTaskWrapper.from_task_id(_metadata_task_id(row))
+                    task = OpenMLTaskWrapper.from_task_id(task_id)
                     _, _, n_samples = task.get_split_dimensions()
                     if n_samples != 1:
                         raise ValueError("Expected exactly one sample per (repeat, fold) split.")
@@ -210,20 +344,89 @@ def build_metafeature_table(
             dataset_computed_splits,
             _format_elapsed(time.perf_counter() - overall_start),
         )
+    return rows, total_cached_splits, total_computed_splits
 
-    metafeature_table = pd.DataFrame(rows)
-    if not metafeature_table.empty:
-        metafeature_table = metafeature_table.sort_values(["dataset", "repeat", "fold"]).reset_index(drop=True)
-    logger.info(
-        "Meta-features: complete in %s (%d rows; %d cached split(s), %d computed split(s))",
-        _format_elapsed(time.perf_counter() - overall_start),
-        len(metafeature_table),
-        total_cached_splits,
-        total_computed_splits,
-    )
-    if "irregularity" not in metafeature_table.columns and "irregularity" not in feature_sets:
-        return metafeature_table
-    return add_irregularity_proxy(metafeature_table, components=irregularity_components)
+
+def _build_parallel(
+    *,
+    dataset_tasks: list[tuple[str, int, int | None, int | None]],
+    feature_sets: tuple[str, ...],
+    pymfe_groups: tuple[str, ...],
+    pymfe_summary: tuple[str, ...],
+    cache_root: Path,
+    cache_identity: str,
+    use_cache: bool,
+    overall_start: float,
+    n_jobs: int,
+    backend: str,
+) -> tuple[list[dict[str, float]], int, int]:
+    """Parallel per-dataset processing using ProcessPoolExecutor."""
+    total_datasets = len(dataset_tasks)
+    rows: list[dict[str, float]] = []
+    total_cached_splits = 0
+    total_computed_splits = 0
+    failed_datasets: list[tuple[str, str]] = []
+    cache_root_str = str(cache_root)
+
+    try:
+        from tqdm import tqdm
+
+        has_tqdm = True
+    except ImportError:
+        has_tqdm = False
+
+    executor = get_executor(backend, max_workers=n_jobs)
+    try:
+        futures = {}
+        for dataset, task_id, n_repeats, n_folds in dataset_tasks:
+            future = executor.submit(
+                _process_one_dataset,
+                dataset,
+                task_id,
+                n_repeats,
+                n_folds,
+                feature_sets,
+                pymfe_groups,
+                pymfe_summary,
+                cache_root_str,
+                cache_identity,
+                use_cache,
+            )
+            futures[future] = dataset
+
+        completed_iter = as_completed(futures)
+        if has_tqdm:
+            completed_iter = tqdm(completed_iter, total=total_datasets, desc="Meta-features", unit="dataset")
+
+        for idx, future in enumerate(completed_iter, start=1):
+            dataset_name, dataset_rows, n_cached, n_computed, error = future.result()
+            if error is not None:
+                failed_datasets.append((dataset_name, error))
+                logger.warning("Meta-features [%d/%d] %s: FAILED — %s", idx, total_datasets, dataset_name, error)
+            else:
+                rows.extend(dataset_rows)
+                total_cached_splits += n_cached
+                total_computed_splits += n_computed
+                if not has_tqdm:
+                    logger.info(
+                        "Meta-features [%d/%d] %s: done (%d cached, %d computed; elapsed %s)",
+                        idx,
+                        total_datasets,
+                        dataset_name,
+                        n_cached,
+                        n_computed,
+                        _format_elapsed(time.perf_counter() - overall_start),
+                    )
+    finally:
+        executor.shutdown(wait=True)
+
+    if failed_datasets:
+        summary = "; ".join(f"{name}: {err}" for name, err in failed_datasets)
+        raise RuntimeError(
+            f"Meta-feature extraction failed for {len(failed_datasets)}/{total_datasets} dataset(s): {summary}"
+        )
+
+    return rows, total_cached_splits, total_computed_splits
 
 
 __all__ = [

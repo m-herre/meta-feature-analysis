@@ -6,6 +6,7 @@ from typing import Any
 
 import yaml
 
+from .parallel import VALID_BACKENDS
 from .types import AnalysisUnit, ComparisonSpec, CorrelationMethod, FDRMethod, GroupDef, MultivariateMethod
 
 VALID_METHOD_VARIANTS = {"default", "tuned", "tuned_ensemble"}
@@ -59,6 +60,12 @@ class CacheStageConfig:
 
 
 @dataclass(frozen=True)
+class ParallelismSettings:
+    n_jobs: int = 1
+    backend: str = "process"
+
+
+@dataclass(frozen=True)
 class CacheConfig:
     enabled: bool = True
     directory: Path = Path(".mfa_cache")
@@ -74,6 +81,7 @@ class AnalysisConfig:
     metafeatures: MetafeatureSettings = field(default_factory=MetafeatureSettings)
     statistics: StatisticsSettings = field(default_factory=StatisticsSettings)
     cache: CacheConfig = field(default_factory=CacheConfig)
+    parallelism: ParallelismSettings = field(default_factory=ParallelismSettings)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -133,9 +141,7 @@ def _parse_comparisons(raw_comparisons: Any, groups: dict[str, GroupDef]) -> tup
             raise ConfigValidationError(f"`{prefix}.group_b` references unknown group `{group_b_name}`.")
         expected_direction = mapping.get("expected_direction")
         if expected_direction not in VALID_EXPECTED_DIRECTIONS:
-            raise ConfigValidationError(
-                f"`{prefix}.expected_direction` must be one of: positive, negative, or null."
-            )
+            raise ConfigValidationError(f"`{prefix}.expected_direction` must be one of: positive, negative, or null.")
         comparisons.append(
             ComparisonSpec(
                 name=name,
@@ -234,6 +240,15 @@ def _parse_cache(raw_cache: Any) -> CacheConfig:
     )
 
 
+def _parse_parallelism(raw_parallelism: Any) -> ParallelismSettings:
+    mapping = _require_mapping(raw_parallelism or {}, "parallelism")
+    n_jobs = int(mapping.get("n_jobs", 1))
+    backend = str(mapping.get("backend", "process"))
+    if backend not in VALID_BACKENDS:
+        raise ConfigValidationError(f"`parallelism.backend` must be one of: {', '.join(sorted(VALID_BACKENDS))}.")
+    return ParallelismSettings(n_jobs=n_jobs, backend=backend)
+
+
 def parse_config(raw_config: dict[str, Any]) -> AnalysisConfig:
     if "version" not in raw_config:
         raise ConfigValidationError("`version` is required.")
@@ -246,6 +261,7 @@ def parse_config(raw_config: dict[str, Any]) -> AnalysisConfig:
         metafeatures=_parse_metafeatures(raw_config.get("metafeatures")),
         statistics=_parse_statistics(raw_config.get("statistics")),
         cache=_parse_cache(raw_config.get("cache")),
+        parallelism=_parse_parallelism(raw_config.get("parallelism")),
     )
 
 

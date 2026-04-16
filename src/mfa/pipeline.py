@@ -19,6 +19,7 @@ from .data.loader import load_tabarena_results
 from .gaps.pairwise import compute_pairwise_gaps
 from .groups import validate_groups_against_data
 from .metafeatures import build_metafeature_table
+from .parallel import resolve_n_jobs
 from .stats.correction import apply_fdr_correction
 from .stats.correlation import correlate_all
 from .stats.multivariate import run_multivariate
@@ -198,12 +199,15 @@ def run_analysis(
     cache_dir = config.cache.directory
     dataset_list = sorted(datasets) if datasets is not None else None
     comparison_names = ", ".join(comparison.name for comparison in config.comparisons)
+    n_jobs = resolve_n_jobs(config.parallelism.n_jobs)
+    backend = config.parallelism.backend
     logger.info(
-        "Starting analysis: comparisons=%s; scope=%s; unit=%s; method_variant=%s",
+        "Starting analysis: comparisons=%s; scope=%s; unit=%s; method_variant=%s; n_jobs=%d",
         comparison_names,
         _dataset_scope_label(dataset_list),
         config.analysis.unit.value,
         config.analysis.method_variant,
+        n_jobs,
     )
 
     raw_hash = compute_stage_hash(
@@ -264,6 +268,8 @@ def run_analysis(
             pymfe_summary=config.metafeatures.pymfe_summary,
             irregularity_components=config.metafeatures.irregularity_components,
             cache_version=config.version,
+            n_jobs=n_jobs,
+            backend=backend,
         )
         if config.cache.enabled and config.cache.stages.metafeatures:
             write_dataframe_cache(metafeature_table, cache_dir, 2, "metafeatures", metafeature_hash)
@@ -347,6 +353,8 @@ def run_analysis(
             confidence_interval=config.statistics.confidence_interval,
             ci_bootstrap_samples=config.statistics.ci_bootstrap_samples,
             ci_confidence_level=config.statistics.ci_confidence_level,
+            n_jobs=n_jobs,
+            backend=backend,
         )
         correction_result = apply_fdr_correction(
             correlation_results,

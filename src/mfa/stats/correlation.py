@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from concurrent.futures import as_completed
 
 import numpy as np
 import pandas as pd
-from scipy.stats import pearsonr, spearmanr
+from scipy.stats import pearsonr, rankdata, spearmanr
 
+from ..parallel import get_executor, resolve_n_jobs
 from ..types import ComparisonSpec, CorrelationMethod, CorrelationResult
+
+_BOOTSTRAP_CHUNK_SIZE = 1000
 
 EXCLUDED_PREDICTOR_COLUMNS = {
     "dataset",
@@ -72,24 +76,43 @@ def bootstrap_correlation_ci(
     if len(x) < 3:
         return None, None
     rng = np.random.default_rng(random_state)
-    stats: list[float] = []
     x_values = x.to_numpy()
     y_values = y.to_numpy()
-    for _ in range(n_bootstrap):
-        sample_idx = rng.integers(0, len(x_values), len(x_values))
-        statistic, _ = _compute_correlation(pd.Series(x_values[sample_idx]), pd.Series(y_values[sample_idx]), method)
-        if np.isfinite(statistic):
-            stats.append(statistic)
-    if not stats:
+    n = len(x_values)
+    boot_stats = np.empty(n_bootstrap, dtype=np.float64)
+    for start in range(0, n_bootstrap, _BOOTSTRAP_CHUNK_SIZE):
+        end = min(start + _BOOTSTRAP_CHUNK_SIZE, n_bootstrap)
+        size = end - start
+        indices = rng.integers(0, n, size=(size, n))
+        x_boot = x_values[indices]
+        y_boot = y_values[indices]
+        if method == CorrelationMethod.SPEARMAN:
+            # Average-rank ties match scipy.stats.spearmanr; positional ranks
+            # (e.g. argsort-of-argsort) would bias CIs under bootstrap duplicates.
+            x_boot = rankdata(x_boot, method="average", axis=1)
+            y_boot = rankdata(y_boot, method="average", axis=1)
+        else:
+            x_boot = x_boot.astype(np.float64, copy=False)
+            y_boot = y_boot.astype(np.float64, copy=False)
+        x_mean = x_boot.mean(axis=1, keepdims=True)
+        y_mean = y_boot.mean(axis=1, keepdims=True)
+        x_centered = x_boot - x_mean
+        y_centered = y_boot - y_mean
+        numerator = (x_centered * y_centered).sum(axis=1)
+        denominator = np.sqrt((x_centered**2).sum(axis=1) * (y_centered**2).sum(axis=1))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            boot_stats[start:end] = numerator / denominator
+    finite_stats = boot_stats[np.isfinite(boot_stats)]
+    if finite_stats.size == 0:
         return None, None
     alpha = 1 - confidence_level
     if expected_direction == "positive":
-        return float(np.quantile(stats, alpha)), None
+        return float(np.quantile(finite_stats, alpha)), None
     if expected_direction == "negative":
-        return None, float(np.quantile(stats, 1 - alpha))
+        return None, float(np.quantile(finite_stats, 1 - alpha))
     return (
-        float(np.quantile(stats, alpha / 2)),
-        float(np.quantile(stats, 1 - (alpha / 2))),
+        float(np.quantile(finite_stats, alpha / 2)),
+        float(np.quantile(finite_stats, 1 - (alpha / 2))),
     )
 
 
@@ -113,6 +136,49 @@ def infer_predictors(
     return inferred
 
 
+def _correlate_one(
+    x_values: np.ndarray,
+    y_values: np.ndarray,
+    comparison_name: str,
+    predictor: str,
+    target: str,
+    method_value: str,
+    expected_direction: str | None,
+    confidence_interval: bool,
+    ci_bootstrap_samples: int,
+    ci_confidence_level: float,
+    random_state: int,
+) -> CorrelationResult:
+    """Run one univariate correlation test. Top-level function for pickle compatibility."""
+    method = CorrelationMethod(method_value)
+    x = pd.Series(x_values)
+    y = pd.Series(y_values)
+    statistic, p_value = _compute_correlation(x, y, method)
+    p_value = _one_sided_p_value(p_value, statistic, expected_direction)
+    ci_lower, ci_upper = (None, None)
+    if confidence_interval and len(x) >= 3:
+        ci_lower, ci_upper = bootstrap_correlation_ci(
+            x,
+            y,
+            method=method,
+            n_bootstrap=ci_bootstrap_samples,
+            confidence_level=ci_confidence_level,
+            expected_direction=expected_direction,
+            random_state=random_state,
+        )
+    return CorrelationResult(
+        comparison_name=comparison_name,
+        predictor=predictor,
+        target=target,
+        statistic=statistic,
+        p_value=p_value,
+        n_observations=int(len(x)),
+        ci_lower=ci_lower,
+        ci_upper=ci_upper,
+        direction_confirmed=_direction_matches(statistic, expected_direction),
+    )
+
+
 def correlate_all(
     analysis_table: pd.DataFrame,
     *,
@@ -124,39 +190,73 @@ def correlate_all(
     ci_bootstrap_samples: int = 10_000,
     ci_confidence_level: float = 0.95,
     random_state: int = 0,
+    n_jobs: int = 1,
+    backend: str = "process",
 ) -> list[CorrelationResult]:
     """Run univariate correlations for every predictor within each comparison."""
     predictor_names = infer_predictors(analysis_table, target=target, predictors=predictors)
-    results: list[CorrelationResult] = []
+    resolved_n_jobs = resolve_n_jobs(n_jobs)
+
+    # Pre-slice data for each (comparison, predictor) pair
+    tasks: list[tuple[np.ndarray, np.ndarray, str, str, str | None]] = []
     for comparison in comparisons:
         subset_by_comparison = analysis_table[analysis_table["comparison_name"] == comparison.name].copy()
         for predictor in predictor_names:
             subset = subset_by_comparison[[predictor, target]].dropna()
-            statistic, p_value = _compute_correlation(subset[predictor], subset[target], method)
-            p_value = _one_sided_p_value(p_value, statistic, comparison.expected_direction)
-            ci_lower, ci_upper = (None, None)
-            if confidence_interval and len(subset) >= 3:
-                ci_lower, ci_upper = bootstrap_correlation_ci(
-                    subset[predictor],
-                    subset[target],
-                    method=method,
-                    n_bootstrap=ci_bootstrap_samples,
-                    confidence_level=ci_confidence_level,
-                    expected_direction=comparison.expected_direction,
-                    random_state=random_state,
-                )
-            results.append(
-                CorrelationResult(
-                    comparison_name=comparison.name,
-                    predictor=predictor,
-                    target=target,
-                    statistic=statistic,
-                    p_value=p_value,
-                    n_observations=int(len(subset)),
-                    ci_lower=ci_lower,
-                    ci_upper=ci_upper,
-                    direction_confirmed=_direction_matches(statistic, comparison.expected_direction),
+            tasks.append(
+                (
+                    subset[predictor].to_numpy(),
+                    subset[target].to_numpy(),
+                    comparison.name,
+                    predictor,
+                    comparison.expected_direction,
                 )
             )
-    return results
 
+    if resolved_n_jobs <= 1:
+        results = []
+        for x_values, y_values, comp_name, pred, expected_dir in tasks:
+            results.append(
+                _correlate_one(
+                    x_values,
+                    y_values,
+                    comp_name,
+                    pred,
+                    target,
+                    method.value,
+                    expected_dir,
+                    confidence_interval,
+                    ci_bootstrap_samples,
+                    ci_confidence_level,
+                    random_state,
+                )
+            )
+        return results
+
+    executor = get_executor(backend, max_workers=resolved_n_jobs)
+    try:
+        futures = {}
+        for idx, (x_values, y_values, comp_name, pred, expected_dir) in enumerate(tasks):
+            future = executor.submit(
+                _correlate_one,
+                x_values,
+                y_values,
+                comp_name,
+                pred,
+                target,
+                method.value,
+                expected_dir,
+                confidence_interval,
+                ci_bootstrap_samples,
+                ci_confidence_level,
+                random_state,
+            )
+            futures[future] = idx
+
+        # Collect results in original order
+        results_by_idx: dict[int, CorrelationResult] = {}
+        for future in as_completed(futures):
+            results_by_idx[futures[future]] = future.result()
+        return [results_by_idx[i] for i in range(len(tasks))]
+    finally:
+        executor.shutdown(wait=True)

@@ -15,6 +15,7 @@ dependencies = [
   "scipy",
   "statsmodels",
   "tabarena",
+  "tqdm",
 ]
 
 [project.optional-dependencies]
