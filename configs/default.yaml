@@ -1,0 +1,66 @@
+version: 1
+
+groups:
+  gbdt:
+    config_types: [CAT, GBM, XGB, PB]
+    label: "GBDT"
+  nn:
+    config_types:
+      - FASTAI
+      - NN_TORCH
+      - REALMLP_GPU
+      - TABM_GPU
+      - MNCA_GPU
+      - MITRA_GPU
+      - TABDPT_GPU
+      - TABSTAR
+      - TABICLV2
+      - TABICL_GPU
+      - TABPFNV2_GPU
+      - TABPFN-V2.6
+      - REALTABPFN-V2.5
+    label: "NN"
+  tree:
+    config_types: [RF, XT, EBM, XRFM_GPU]
+    label: "Tree"
+
+comparisons:
+  - name: nn_vs_gbdt
+    group_a: nn
+    group_b: gbdt
+    expected_direction: positive
+
+analysis:
+  unit: dataset
+  error_column: metric_error
+  method_variant: tuned
+  exclude_methods_containing: [AutoGluon]
+
+metafeatures:
+  feature_sets: [basic, irregularity]
+  pymfe_groups: [general, statistical, info-theory]
+  pymfe_summary: [mean, sd]
+  irregularity_components:
+    - irreg_min_cov_eig
+    - irreg_std_skew
+    - irreg_range_skew
+    - irreg_kurtosis_std
+
+statistics:
+  correlation_method: spearman
+  alpha: 0.05
+  fdr_method: bh
+  confidence_interval: true
+  ci_bootstrap_samples: 10000
+  ci_confidence_level: 0.95
+  multivariate: false
+  multivariate_method: ols
+
+cache:
+  enabled: true
+  directory: .mfa_cache
+  stages:
+    raw_results: true
+    metafeatures: true
+    gaps: true
+    statistics: true

@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meta-feature-analysis"
+version = "0.1.0"
+description = "Meta-feature analysis pipeline for pairwise TabArena model comparisons"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "numpy",
+  "pandas",
+  "pyyaml",
+  "scipy",
+  "statsmodels",
+  "tabarena",
+]
+
+[project.optional-dependencies]
+pymfe = ["pymfe"]
+dev = ["pytest", "ruff"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = [
+  "src",
+  "../tabarena/tabarena",
+]
+testpaths = ["tests"]
