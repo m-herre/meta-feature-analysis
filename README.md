@@ -150,28 +150,102 @@ from mfa import load_config, run_analysis
 
 ---
 
-## Configuration guide
+## Configuration reference
 
-Top-level config sections:
+### `version` (required)
 
-- `version`: integer config/pipeline version (also used in cache identity).
-- `groups`: model families defined by `config_types`.
-- `comparisons`: one or more pairwise comparisons (`group_a` vs `group_b`).
-- `analysis`: split unit, method subtype filter, and result column names.
-- `metafeatures`: selected feature sets (`basic`, `irregularity`, optional `pymfe`).
-- `statistics`: correlation, confidence intervals, FDR correction, optional multivariate model.
-- `cache`: cache toggle, directory, and per-stage cache control.
+Integer config/pipeline version. Also used in cache identity — bump it to force a full cache rebuild.
 
-Important analysis options:
+### `groups`
 
-- `analysis.unit`:
-  - `dataset` (default): aggregate over splits before correlation.
-  - `fold`: keep split-level rows (warning: folds are not independent observations).
-- `analysis.method_variant`: one of `default`, `tuned`, `tuned_ensemble`.
-- `analysis.error_column`: evaluation metric used for `delta_raw`/`delta_norm`.
-- `analysis.selection_error_column` (optional): metric used to pick split-level winners. If omitted, falls back to `analysis.error_column`.
-- `statistics.fdr_method`: `bh`, `holm`, or `null` (disable correction).
-- `statistics.multivariate`: only runs when exactly one comparison is configured.
+Define model families by their TabArena `config_type` values.
+
+| Field | Type | Description |
+|---|---|---|
+| `config_types` | list of strings (required) | TabArena config type identifiers, e.g. `[CAT, GBM, XGB]` |
+| `label` | string | Human-readable label for plots/tables. Defaults to the group key name |
+
+### `comparisons`
+
+One or more pairwise comparisons between groups. `delta_norm = group_a_error - group_b_error`, so positive values mean group_a performs worse.
+
+| Field | Type | Values | Default |
+|---|---|---|---|
+| `name` | string (required) | Any identifier | — |
+| `group_a` | string (required) | Must reference a key in `groups` | — |
+| `group_b` | string (required) | Must reference a key in `groups` | — |
+| `expected_direction` | string or null | `positive`, `negative`, `null` | `null` |
+
+`expected_direction` controls one-sided vs two-sided testing:
+- `null` — two-sided test and two-sided CI (use for exploratory analysis)
+- `positive` — one-sided test, expects positive correlation; CI has lower bound only
+- `negative` — one-sided test, expects negative correlation; CI has upper bound only
+
+### `analysis`
+
+| Field | Type | Values | Default |
+|---|---|---|---|
+| `unit` | string | `dataset`, `fold` | `dataset` |
+| `error_column` | string | Any numeric column in TabArena results | `metric_error` |
+| `selection_error_column` | string or null | Any numeric column, or `null` to reuse `error_column` | `null` |
+| `method_variant` | string | `default`, `tuned`, `tuned_ensemble` | `tuned` |
+| `exclude_methods_containing` | list of strings | Substring patterns to exclude methods by name | `[]` |
+
+- `unit: dataset` aggregates folds to dataset-level means before correlation (recommended for formal inference).
+- `unit: fold` keeps every fold as a separate observation (inflates statistical power — folds share training data).
+- `selection_error_column` controls which metric picks the best method per split (val-based selection). `error_column` is used for the final evaluation (test-based).
+
+### `metafeatures`
+
+| Field | Type | Values | Default |
+|---|---|---|---|
+| `feature_sets` | list of strings | `basic`, `irregularity`, `pymfe` | `[basic, irregularity]` |
+| `pymfe_groups` | list of strings | pymfe feature groups (e.g. `general`, `statistical`, `info-theory`) | `[general, statistical, info-theory]` |
+| `pymfe_summary` | list of strings | pymfe summary functions (e.g. `mean`, `sd`, `min`, `max`) | `[mean, sd]` |
+| `irregularity_components` | list of strings | See below | all four |
+
+Available feature sets:
+- `basic` — produces: `n`, `d`, `log_n`, `n_over_d`, `cat_fraction`, `missing_fraction`
+- `irregularity` — covariance eigenvalue-based composite score on numeric columns; produces individual components plus a combined `irregularity` column
+- `pymfe` — requires `pip install -e ".[pymfe]"`; extracts features via the pymfe library
+
+Available irregularity components (all included by default):
+- `irreg_min_cov_eig` — minimum covariance eigenvalue
+- `irreg_std_skew` — standard deviation of feature skewness
+- `irreg_range_skew` — range of feature skewness
+- `irreg_kurtosis_std` — standard deviation of feature kurtosis
+
+### `statistics`
+
+| Field | Type | Values | Default |
+|---|---|---|---|
+| `correlation_method` | string | `spearman`, `pearson` | `spearman` |
+| `alpha` | float | Significance threshold (0–1) | `0.05` |
+| `fdr_method` | string or null | `bh`, `holm`, `null` | `bh` |
+| `confidence_interval` | bool | `true`, `false` | `true` |
+| `ci_bootstrap_samples` | int | Number of bootstrap resamples | `10000` |
+| `ci_confidence_level` | float | CI coverage (0–1) | `0.95` |
+| `multivariate` | bool | `true`, `false` | `false` |
+| `multivariate_method` | string | `ols`, `ridge` | `ols` |
+
+- `spearman` — rank-based, robust to outliers and non-linearity. Recommended for exploratory work.
+- `pearson` — assumes linear relationship and normality.
+- `bh` — Benjamini-Hochberg FDR correction (controls false discovery rate).
+- `holm` — Holm-Bonferroni correction (controls family-wise error rate, more conservative).
+- `multivariate` — only runs when exactly one comparison is configured. Fits all predictors jointly.
+
+### `cache`
+
+| Field | Type | Values | Default |
+|---|---|---|---|
+| `enabled` | bool | `true`, `false` | `true` |
+| `directory` | string | Path relative to project root | `.mfa_cache` |
+| `stages.raw_results` | bool | `true`, `false` | `true` |
+| `stages.metafeatures` | bool | `true`, `false` | `true` |
+| `stages.gaps` | bool | `true`, `false` | `true` |
+| `stages.statistics` | bool | `true`, `false` | `true` |
+
+Cache is content-hash based — config changes automatically produce fresh results. You only need to manually delete `.mfa_cache/` after **code changes** (the hash does not track source code).
 
 ---
 
