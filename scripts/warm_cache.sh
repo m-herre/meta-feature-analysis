@@ -2,7 +2,7 @@
 #SBATCH --job-name=mfa-warm
 #SBATCH --partition=cpu
 #SBATCH --cpus-per-task=64
-#SBATCH --mem=200G
+#SBATCH --mem=900G
 #SBATCH --output=logs/warm_cache_%j.out
 #SBATCH --error=logs/warm_cache_%j.err
 
