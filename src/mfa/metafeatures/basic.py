@@ -28,4 +28,3 @@ def compute_basic_metafeatures(X_train: pd.DataFrame) -> dict[str, float]:
         "cat_fraction": float(len(cat_cols) / d) if d > 0 else np.nan,
         "missing_fraction": float(X_train.isna().mean().mean()) if d > 0 else np.nan,
     }
-

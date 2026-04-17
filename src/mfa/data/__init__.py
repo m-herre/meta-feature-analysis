@@ -8,4 +8,3 @@ __all__ = [
     "decode_split_index",
     "load_tabarena_results",
 ]
-

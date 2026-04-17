@@ -26,4 +26,3 @@ def add_split_columns(
     decoded[repeat_col] = decoded[split_id_col] // n_folds_per_repeat
     decoded[fold_in_repeat_col] = decoded[split_id_col] % n_folds_per_repeat
     return decoded
-

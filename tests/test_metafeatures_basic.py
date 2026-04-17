@@ -132,8 +132,9 @@ def test_single_slot_task_cache_evicts_on_new_id(monkeypatch) -> None:
     Otherwise an unbounded dict grows per-worker and OOMs the run
     (see job 222410, MaxRSS=896G on a 900G allocation).
     """
-    import mfa.metafeatures as mfa_metafeatures
     from tabarena.benchmark.task.openml import OpenMLTaskWrapper
+
+    import mfa.metafeatures as mfa_metafeatures
 
     loads: list[int] = []
 

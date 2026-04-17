@@ -14,10 +14,7 @@ def _compute_vif(X: pd.DataFrame) -> dict[str, float]:
     if X.shape[1] <= 1:
         return {column: 1.0 for column in X.columns}
     values = X.to_numpy()
-    return {
-        column: float(variance_inflation_factor(values, idx))
-        for idx, column in enumerate(X.columns)
-    }
+    return {column: float(variance_inflation_factor(values, idx)) for idx, column in enumerate(X.columns)}
 
 
 def run_multivariate(
@@ -59,10 +56,7 @@ def run_multivariate(
         residual_sum_squares = float(np.sum((y_values - predictions) ** 2))
         total_sum_squares = float(np.sum((y_values - y_values.mean()) ** 2))
         r_squared = float(1 - residual_sum_squares / total_sum_squares) if total_sum_squares > 0 else np.nan
-        coefficients = {
-            column: float(value)
-            for column, value in zip(X.columns, coefficients_array, strict=False)
-        }
+        coefficients = {column: float(value) for column, value in zip(X.columns, coefficients_array, strict=False)}
         p_values = {column: np.nan for column in X.columns}
         adj_r_squared = np.nan
 

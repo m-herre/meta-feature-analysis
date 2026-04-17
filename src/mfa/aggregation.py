@@ -41,14 +41,10 @@ def _empty_analysis_table(metafeature_table: pd.DataFrame, gap_table: pd.DataFra
 
 def _candidate_numeric_columns(analysis: pd.DataFrame, metafeature_table: pd.DataFrame) -> list[str]:
     metafeature_columns = [
-        column
-        for column in metafeature_table.columns
-        if column not in JOIN_KEY_COLUMNS and not column.startswith("_")
+        column for column in metafeature_table.columns if column not in JOIN_KEY_COLUMNS and not column.startswith("_")
     ]
     numeric_columns = [
-        column
-        for column in analysis.select_dtypes(include="number").columns
-        if column not in {"repeat", "fold"}
+        column for column in analysis.select_dtypes(include="number").columns if column not in {"repeat", "fold"}
     ]
     expected = [
         column

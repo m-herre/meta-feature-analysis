@@ -96,4 +96,3 @@ def test_bootstrap_chunking_matches_monolithic_result() -> None:
     assert ci_default == ci_repeat
     assert ci_default[0] is not None and ci_default[1] is not None
     assert ci_default[0] < ci_default[1]
-

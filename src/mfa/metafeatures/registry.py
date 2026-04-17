@@ -40,4 +40,3 @@ def extract_requested_metafeatures(
             )
         )
     return features
-

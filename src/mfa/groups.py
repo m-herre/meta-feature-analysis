@@ -31,4 +31,3 @@ def comparison_to_dict(comparison: ComparisonSpec) -> dict[str, str | None]:
         "group_b_label": comparison.group_b.label,
         "expected_direction": comparison.expected_direction,
     }
-

@@ -11,4 +11,3 @@ __all__ = [
     "load_config",
     "run_analysis",
 ]
-

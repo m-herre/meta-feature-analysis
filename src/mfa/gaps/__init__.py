@@ -8,4 +8,3 @@ __all__ = [
     "compute_pairwise_gaps",
     "pick_best_in_group",
 ]
-

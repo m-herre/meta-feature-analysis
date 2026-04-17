@@ -74,4 +74,3 @@ def add_irregularity_proxy(
         z_scores["irreg_min_cov_eig"] = -z_scores["irreg_min_cov_eig"]
     result[output_col] = z_scores.mean(axis=1, skipna=True)
     return result
-

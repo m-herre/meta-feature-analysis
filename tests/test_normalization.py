@@ -19,4 +19,3 @@ def test_add_normalized_error_matches_expected_scale() -> None:
     assert np.isclose(normalized.loc[normalized["method"] == "xgboost1", "norm_error"].item(), 0.0)
     assert np.isclose(normalized.loc[normalized["method"] == "xgboost2", "norm_error"].item(), 1.0)
     assert np.isclose(normalized.loc[normalized["method"] == "xgboost3", "norm_error"].item(), 1.0)
-
