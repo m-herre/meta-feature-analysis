@@ -272,6 +272,8 @@ For each configured comparison (`group_a` vs `group_b`), the package runs:
    - Loads HPO result frames per method from `tabarena_context`.
    - Filters by `method_subtype == analysis.method_variant`.
    - Requires identifier columns `dataset`, `fold`, `method`, `config_type`, `method_subtype`, plus whichever metric columns are configured in `error_column` and `selection_error_column`.
+   - **Imputed rows are treated as missing.** TabArena marks runs that failed (e.g. OOM, timeout) via an `imputed` flag and fills in a placeholder metric. The loader nulls those metric values while preserving the `imputed` / `impute_method` columns for auditing. Imputed rows never compete in best-in-group selection, and a split on which a family has only imputed candidates is dropped from that comparison. Rationale: placeholders are not observations; letting them win would bias the chosen representative, and silently using them understates the uncertainty on failure-prone splits.
+   - **MNAR caveat.** Imputation is non-random — it correlates with things like dataset size (TabPFN OOMs on large `n`) or class imbalance. Dropping those splits biases the retained sample toward settings where the family actually runs, which can attenuate or bias meta-feature correlations. When a comparison loses many splits to imputation, sanity-check by intersecting on splits where **both** groups are real and comparing against the full retained set.
 
 2. **Decode splits and normalize errors**
    - Decodes TabArena fold index into `(repeat, fold_in_repeat)`.

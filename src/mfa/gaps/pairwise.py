@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import pandas as pd
 
 from .._logging import get_logger
@@ -47,6 +49,18 @@ def _format_missing_examples(split_keys: set[tuple[str, int, int]], *, limit: in
     return ", ".join(f"{dataset}/r{repeat}/f{fold}" for dataset, repeat, fold in examples)
 
 
+def _family_candidates(
+    df: pd.DataFrame,
+    *,
+    config_types: frozenset[str] | set[str],
+    required_columns: Sequence[str],
+) -> pd.DataFrame:
+    family = df[df["config_type"].isin(config_types)].copy()
+    if family.empty:
+        return family
+    return family[family[list(required_columns)].notna().all(axis=1)].copy()
+
+
 def pick_best_in_group(
     df: pd.DataFrame,
     *,
@@ -59,15 +73,18 @@ def pick_best_in_group(
 ) -> pd.DataFrame:
     """Pick the best-performing method inside a config-type group per split."""
     group_cols = ["dataset", "repeat", "fold_in_repeat"]
-    family = df[df["config_type"].isin(config_types)].copy()
+    selected_error_column = error_column if output_error_column is None else output_error_column
+    selected_norm_error_column = norm_error_column if output_norm_error_column is None else output_norm_error_column
+    required_columns = list(
+        dict.fromkeys([error_column, norm_error_column, selected_error_column, selected_norm_error_column])
+    )
+    family = _family_candidates(df, config_types=config_types, required_columns=required_columns)
     if family.empty:
         return pd.DataFrame(
             columns=SPLIT_KEY_COLUMNS + [f"best_{prefix}_method", f"best_{prefix}_error", f"best_{prefix}_norm_error"]
         )
-    selected_error_column = error_column if output_error_column is None else output_error_column
-    selected_norm_error_column = norm_error_column if output_norm_error_column is None else output_norm_error_column
     family = family.sort_values(group_cols + [norm_error_column, error_column, "method"])
-    family = family.groupby(group_cols, as_index=False).first()
+    family = family.groupby(group_cols, sort=False).head(1)
     family = family[group_cols + ["method", selected_error_column, selected_norm_error_column]].rename(
         columns={
             "fold_in_repeat": "fold",
@@ -108,14 +125,40 @@ def compute_pairwise_gaps(
             fold_column="split_id",
             output_column="evaluation_norm_error",
         )
-    available_splits = _split_key_set(
-        prepared[["dataset", "repeat", "fold_in_repeat"]].rename(columns={"fold_in_repeat": "fold"})
-    )
 
     all_tables: list[pd.DataFrame] = []
     for comparison in comparisons:
-        best_a = pick_best_in_group(
+        required_metric_columns = list(
+            dict.fromkeys(
+                [
+                    selection_error_column,
+                    "selection_norm_error",
+                    error_column,
+                    "evaluation_norm_error",
+                ]
+            )
+        )
+        candidate_a = _family_candidates(
             prepared,
+            config_types=comparison.group_a.config_types,
+            required_columns=required_metric_columns,
+        )
+        candidate_b = _family_candidates(
+            prepared,
+            config_types=comparison.group_b.config_types,
+            required_columns=required_metric_columns,
+        )
+        available_splits = _split_key_set(
+            pd.concat(
+                [
+                    candidate_a[["dataset", "repeat", "fold_in_repeat"]],
+                    candidate_b[["dataset", "repeat", "fold_in_repeat"]],
+                ],
+                ignore_index=True,
+            ).rename(columns={"fold_in_repeat": "fold"})
+        )
+        best_a = pick_best_in_group(
+            candidate_a,
             config_types=comparison.group_a.config_types,
             prefix="a",
             error_column=selection_error_column,
@@ -124,7 +167,7 @@ def compute_pairwise_gaps(
             output_norm_error_column="evaluation_norm_error",
         )
         best_b = pick_best_in_group(
-            prepared,
+            candidate_b,
             config_types=comparison.group_b.config_types,
             prefix="b",
             error_column=selection_error_column,

@@ -78,3 +78,39 @@ def test_load_tabarena_results_raises_for_missing_requested_metric_column(analys
 
     with pytest.raises(ValueError, match="metric_error_val_alt"):
         load_tabarena_results(config, tabarena_context=FakeTabArenaContext(frame))
+
+
+def test_load_tabarena_results_preserves_imputation_metadata_and_nulls_imputed_metrics(analysis_config) -> None:
+    frame = pd.DataFrame(
+        {
+            "dataset": ["dataset_a", "dataset_a"],
+            "fold": [0, 0],
+            "method": ["tabpfn_default", "rf_default"],
+            "config_type": ["TABPFNV2_GPU", "RF"],
+            "method_subtype": ["tuned", "tuned"],
+            "metric_error": [0.02, 0.20],
+            "metric_error_val": [0.01, 0.21],
+            "imputed": [True, False],
+            "impute_method": ["RandomForest_c1_BAG_L1", None],
+        }
+    )
+
+    loaded = load_tabarena_results(analysis_config, tabarena_context=FakeTabArenaContext(frame))
+
+    assert loaded.columns.tolist() == [
+        "dataset",
+        "fold",
+        "method",
+        "config_type",
+        "method_subtype",
+        "metric_error",
+        "metric_error_val",
+        "imputed",
+        "impute_method",
+    ]
+    assert pd.isna(loaded.loc[0, "metric_error"])
+    assert pd.isna(loaded.loc[0, "metric_error_val"])
+    assert bool(loaded.loc[0, "imputed"]) is True
+    assert loaded.loc[0, "impute_method"] == "RandomForest_c1_BAG_L1"
+    assert loaded.loc[1, "metric_error"] == pytest.approx(0.20)
+    assert loaded.loc[1, "metric_error_val"] == pytest.approx(0.21)

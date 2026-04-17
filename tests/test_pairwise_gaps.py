@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from mfa.gaps.pairwise import GAP_TABLE_COLUMNS, compute_pairwise_gaps, pick_best_in_group
+from mfa.types import ComparisonSpec, GroupDef
 
 
 def test_pick_best_in_group_uses_deterministic_tie_break(synthetic_results) -> None:
@@ -93,3 +94,73 @@ def test_compute_pairwise_gaps_can_select_on_val_and_evaluate_on_test(analysis_c
     assert np.isclose(split["best_a_error"], 0.50)
     assert np.isclose(split["best_b_error"], 0.20)
     assert np.isclose(split["delta_raw"], 0.30)
+
+
+def test_compute_pairwise_gaps_uses_real_family_member_when_imputed_row_is_missing(analysis_config) -> None:
+    results = pd.DataFrame(
+        [
+            ["dataset_a", 0, "nn_alpha", np.nan, np.nan, "NN_A", "tuned", True],
+            ["dataset_a", 0, "nn_beta", 0.50, 0.40, "NN_B", "tuned", False],
+            ["dataset_a", 0, "gbdt_alpha", 0.20, 0.10, "GBDT_A", "tuned", False],
+        ],
+        columns=[
+            "dataset",
+            "fold",
+            "method",
+            "metric_error",
+            "metric_error_val",
+            "config_type",
+            "method_subtype",
+            "imputed",
+        ],
+    )
+
+    gaps = compute_pairwise_gaps(
+        results,
+        analysis_config.comparisons,
+        error_column="metric_error",
+        selection_error_column="metric_error_val",
+    )
+
+    split = gaps.iloc[0]
+    assert split["best_a_method"] == "nn_beta"
+    assert split["best_b_method"] == "gbdt_alpha"
+    assert np.isclose(split["best_a_error"], 0.50)
+
+
+def test_compute_pairwise_gaps_excludes_dataset_when_singleton_family_has_no_real_metric() -> None:
+    comparisons = [
+        ComparisonSpec(
+            name="tabpfn_vs_tree",
+            group_a=GroupDef(name="tabpfn", config_types=frozenset({"TABPFNV2_GPU"}), label="TabPFNv2"),
+            group_b=GroupDef(name="tree", config_types=frozenset({"GBDT_A"}), label="Tree"),
+        )
+    ]
+    results = pd.DataFrame(
+        [
+            ["dataset_a", 0, "tabpfn_default", np.nan, np.nan, "TABPFNV2_GPU", "default", True],
+            ["dataset_a", 0, "gbdt_alpha", 0.20, 0.21, "GBDT_A", "default", False],
+            ["dataset_b", 0, "tabpfn_default", 0.30, 0.31, "TABPFNV2_GPU", "default", False],
+            ["dataset_b", 0, "gbdt_alpha", 0.10, 0.11, "GBDT_A", "default", False],
+        ],
+        columns=[
+            "dataset",
+            "fold",
+            "method",
+            "metric_error",
+            "metric_error_val",
+            "config_type",
+            "method_subtype",
+            "imputed",
+        ],
+    )
+
+    gaps = compute_pairwise_gaps(
+        results,
+        comparisons,
+        error_column="metric_error",
+        selection_error_column="metric_error_val",
+    )
+
+    assert gaps["dataset"].tolist() == ["dataset_b"]
+    assert gaps["best_a_method"].tolist() == ["tabpfn_default"]

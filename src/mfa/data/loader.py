@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import numpy as np
 import pandas as pd
 
 from ..config import AnalysisConfig
@@ -12,6 +13,10 @@ IDENTITY_RESULT_COLUMNS = [
     "method",
     "config_type",
     "method_subtype",
+]
+OPTIONAL_RESULT_COLUMNS = [
+    "imputed",
+    "impute_method",
 ]
 
 
@@ -29,12 +34,30 @@ def _required_result_columns(config: AnalysisConfig) -> list[str]:
     return list(dict.fromkeys(columns))
 
 
+def _columns_to_keep(df_results: pd.DataFrame, *, required_columns: Sequence[str]) -> list[str]:
+    optional_columns = [column for column in OPTIONAL_RESULT_COLUMNS if column in df_results.columns]
+    return list(dict.fromkeys([*required_columns, *optional_columns]))
+
+
+def _null_imputed_metrics(df_results: pd.DataFrame, *, metric_columns: Sequence[str]) -> pd.DataFrame:
+    if "imputed" not in df_results.columns:
+        return df_results
+
+    normalized = df_results.copy()
+    imputed_mask = normalized["imputed"].astype("boolean").fillna(False)
+    if not imputed_mask.any():
+        return normalized
+
+    normalized.loc[imputed_mask, list(metric_columns)] = np.nan
+    return normalized
+
+
 def _sanitize_result_frame(df_results: pd.DataFrame, *, required_columns: Sequence[str]) -> pd.DataFrame:
     """Restrict raw results to the cache-safe schema used by the pipeline."""
     missing_columns = [column for column in required_columns if column not in df_results.columns]
     if missing_columns:
         raise ValueError(f"Loaded results are missing required columns: {missing_columns}")
-    return df_results.loc[:, list(required_columns)].copy()
+    return df_results.loc[:, _columns_to_keep(df_results, required_columns=required_columns)].copy()
 
 
 def load_tabarena_results(
@@ -72,6 +95,10 @@ def load_tabarena_results(
     if datasets is not None:
         dataset_set = set(datasets)
         df_results = df_results[df_results["dataset"].isin(dataset_set)].copy()
+    df_results = _null_imputed_metrics(
+        df_results,
+        metric_columns=_required_result_columns(config)[len(IDENTITY_RESULT_COLUMNS):],
+    )
 
     return _sanitize_result_frame(
         df_results,

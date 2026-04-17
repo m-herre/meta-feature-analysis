@@ -219,6 +219,7 @@ def run_analysis(
             "exclude_methods_containing": config.analysis.exclude_methods_containing,
             "error_column": config.analysis.error_column,
             "selection_error_column": config.analysis.selection_error_column,
+            "imputed_metric_policy": "na_keep_flag",
         },
     )
     raw_results = None
