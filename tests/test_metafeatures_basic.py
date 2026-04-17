@@ -124,3 +124,43 @@ def test_build_metafeature_table_logs_dataset_progress(
     assert any("Meta-features [2/2] dataset_b: done in 00:00:02" in message for message in messages)
     assert any("total elapsed 00:00:04" in message for message in messages)
     assert any("Meta-features: complete in 00:00:12" in message for message in messages)
+
+
+def test_single_slot_task_cache_evicts_on_new_id(monkeypatch) -> None:
+    """_get_cached_task must release the previous wrapper before loading a new one.
+
+    Otherwise an unbounded dict grows per-worker and OOMs the run
+    (see job 222410, MaxRSS=896G on a 900G allocation).
+    """
+    import mfa.metafeatures as mfa_metafeatures
+    from tabarena.benchmark.task.openml import OpenMLTaskWrapper
+
+    loads: list[int] = []
+
+    class FakeWrapper:
+        def __init__(self, task_id: int) -> None:
+            loads.append(task_id)
+            self.task_id = task_id
+
+        def get_split_dimensions(self) -> tuple[int, int, int]:
+            return (1, 1, 1)
+
+    monkeypatch.setattr(
+        OpenMLTaskWrapper,
+        "from_task_id",
+        classmethod(lambda cls, task_id: FakeWrapper(task_id)),
+    )
+
+    mfa_metafeatures._CACHED_TASK_ID = None
+    mfa_metafeatures._CACHED_TASK = None
+
+    a1 = mfa_metafeatures._get_cached_task(1)
+    a2 = mfa_metafeatures._get_cached_task(1)
+    b1 = mfa_metafeatures._get_cached_task(2)
+    a3 = mfa_metafeatures._get_cached_task(1)
+
+    assert a1 is a2
+    assert a1 is not b1
+    assert a1 is not a3
+    assert loads == [1, 2, 1]
+    assert mfa_metafeatures._CACHED_TASK_ID == 1

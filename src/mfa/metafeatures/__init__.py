@@ -103,68 +103,74 @@ def extract_split_metafeatures(
     return features
 
 
-def _process_one_dataset(
+# Per-worker-process single-slot task cache. OpenMLTaskWrapper pins the
+# full dataset (X, y) in memory, so we must never accumulate wrappers
+# across datasets — an unbounded dict OOMed the full run (job 222410,
+# MaxRSS=896G). A 1-slot cache bounds each worker's footprint to one
+# dataset; consecutive splits of the same dataset still hit the cache.
+_CACHED_TASK_ID: int | None = None
+_CACHED_TASK: Any = None
+
+
+def _get_cached_task(task_id: int):
+    global _CACHED_TASK_ID, _CACHED_TASK
+    if _CACHED_TASK_ID == task_id and _CACHED_TASK is not None:
+        return _CACHED_TASK
+    # Evict previous wrapper before loading the next one so peak RSS
+    # stays bounded by one dataset, not two.
+    _CACHED_TASK_ID = None
+    _CACHED_TASK = None
+    from tabarena.benchmark.task.openml import OpenMLTaskWrapper
+
+    task = OpenMLTaskWrapper.from_task_id(task_id)
+    _, _, n_samples = task.get_split_dimensions()
+    if n_samples != 1:
+        raise ValueError("Expected exactly one sample per (repeat, fold) split.")
+    _CACHED_TASK_ID = task_id
+    _CACHED_TASK = task
+    return task
+
+
+def _process_one_split(
     dataset: str,
     task_id: int,
-    n_repeats: int | None,
-    n_folds: int | None,
+    repeat: int,
+    fold: int,
     feature_sets: tuple[str, ...],
     pymfe_groups: tuple[str, ...],
     pymfe_summary: tuple[str, ...],
     cache_root: str,
     cache_identity: str,
     use_cache: bool,
-) -> tuple[str, list[dict[str, float]], int, int, str | None]:
-    """Process all splits for one dataset. Returns (dataset, rows, n_cached, n_computed, error)."""
+) -> tuple[str, int, int, dict[str, float] | None, bool, bool, str | None]:
+    """Handle one (dataset, repeat, fold).
+
+    Returns (dataset, repeat, fold, row, was_cached, was_computed, error).
+    """
     try:
         cache_path = Path(cache_root)
-        task = None
-        if n_repeats is None or n_folds is None:
-            from tabarena.benchmark.task.openml import OpenMLTaskWrapper
-
-            task = OpenMLTaskWrapper.from_task_id(task_id)
-            n_repeats, n_folds, n_samples = task.get_split_dimensions()
-            if n_samples != 1:
-                raise ValueError("Expected exactly one sample per (repeat, fold) split.")
-
-        rows: list[dict[str, float]] = []
-        n_cached = 0
-        n_computed = 0
-        for repeat in range(n_repeats):
-            for fold in range(n_folds):
-                split_path = _split_cache_path(cache_path, dataset, repeat, fold)
-                if use_cache and split_path.exists():
-                    cached_row = _read_cached_split(split_path, cache_identity)
-                    if cached_row is not None:
-                        rows.append(cached_row)
-                        n_cached += 1
-                        continue
-
-                if task is None:
-                    from tabarena.benchmark.task.openml import OpenMLTaskWrapper
-
-                    task = OpenMLTaskWrapper.from_task_id(task_id)
-                    _, _, n_samples = task.get_split_dimensions()
-                    if n_samples != 1:
-                        raise ValueError("Expected exactly one sample per (repeat, fold) split.")
-                split_row = extract_split_metafeatures(
-                    task,
-                    dataset,
-                    repeat,
-                    fold,
-                    feature_sets=feature_sets,
-                    pymfe_groups=pymfe_groups,
-                    pymfe_summary=pymfe_summary,
-                )
-                rows.append(split_row)
-                n_computed += 1
-                if use_cache:
-                    split_path.parent.mkdir(parents=True, exist_ok=True)
-                    cached_row = pd.DataFrame([{**split_row, SPLIT_CACHE_HASH_COLUMN: cache_identity}])
-                    cached_row.to_parquet(split_path, index=False)
-        return dataset, rows, n_cached, n_computed, None
+        split_path = _split_cache_path(cache_path, dataset, repeat, fold)
+        if use_cache and split_path.exists():
+            cached_row = _read_cached_split(split_path, cache_identity)
+            if cached_row is not None:
+                return dataset, repeat, fold, cached_row, True, False, None
+        task = _get_cached_task(task_id)
+        split_row = extract_split_metafeatures(
+            task,
+            dataset,
+            repeat,
+            fold,
+            feature_sets=feature_sets,
+            pymfe_groups=pymfe_groups,
+            pymfe_summary=pymfe_summary,
+        )
+        if use_cache:
+            split_path.parent.mkdir(parents=True, exist_ok=True)
+            frame = pd.DataFrame([{**split_row, SPLIT_CACHE_HASH_COLUMN: cache_identity}])
+            frame.to_parquet(split_path, index=False)
+        return dataset, repeat, fold, split_row, False, True, None
     except Exception as exc:
-        return dataset, [], 0, 0, f"{type(exc).__name__}: {exc}"
+        return dataset, repeat, fold, None, False, False, f"{type(exc).__name__}: {exc}"
 
 
 def build_metafeature_table(
@@ -360,13 +366,44 @@ def _build_parallel(
     n_jobs: int,
     backend: str,
 ) -> tuple[list[dict[str, float]], int, int]:
-    """Parallel per-dataset processing using ProcessPoolExecutor."""
-    total_datasets = len(dataset_tasks)
-    rows: list[dict[str, float]] = []
-    total_cached_splits = 0
-    total_computed_splits = 0
-    failed_datasets: list[tuple[str, str]] = []
+    """Parallel per-split processing: one future per (dataset, repeat, fold).
+
+    Finer granularity than per-dataset keeps the process pool saturated even
+    when dataset runtimes are skewed (e.g. a huge dataset dwarfs a tiny one).
+    """
     cache_root_str = str(cache_root)
+
+    # Enumerate every split up front. For any dataset missing dims in metadata,
+    # load the task once in the main process to discover them (rare in practice).
+    missing_dims = [
+        (dataset, task_id)
+        for dataset, task_id, n_repeats, n_folds in dataset_tasks
+        if n_repeats is None or n_folds is None
+    ]
+    resolved_dims: dict[str, tuple[int, int]] = {}
+    if missing_dims:
+        from tabarena.benchmark.task.openml import OpenMLTaskWrapper
+
+        for dataset, task_id in missing_dims:
+            task = OpenMLTaskWrapper.from_task_id(task_id)
+            n_rep, n_fld, n_samples = task.get_split_dimensions()
+            if n_samples != 1:
+                raise ValueError("Expected exactly one sample per (repeat, fold) split.")
+            resolved_dims[dataset] = (n_rep, n_fld)
+
+    split_units: list[tuple[str, int, int, int]] = []
+    for dataset, task_id, n_repeats, n_folds in dataset_tasks:
+        if n_repeats is None or n_folds is None:
+            n_repeats, n_folds = resolved_dims[dataset]
+        for repeat in range(n_repeats):
+            for fold in range(n_folds):
+                split_units.append((dataset, task_id, repeat, fold))
+
+    total_splits = len(split_units)
+    total_cached = 0
+    total_computed = 0
+    failed: list[tuple[str, int, int, str]] = []
+    rows_by_dataset: dict[str, list[dict[str, float]]] = {dataset: [] for dataset, *_ in dataset_tasks}
 
     try:
         from tqdm import tqdm
@@ -375,16 +412,22 @@ def _build_parallel(
     except ImportError:
         has_tqdm = False
 
+    logger.info(
+        "Meta-features: submitting %d split(s) across %d dataset(s) to %d worker(s)",
+        total_splits,
+        len(dataset_tasks),
+        n_jobs,
+    )
+
     executor = get_executor(backend, max_workers=n_jobs)
     try:
-        futures = {}
-        for dataset, task_id, n_repeats, n_folds in dataset_tasks:
-            future = executor.submit(
-                _process_one_dataset,
+        futures = [
+            executor.submit(
+                _process_one_split,
                 dataset,
                 task_id,
-                n_repeats,
-                n_folds,
+                repeat,
+                fold,
                 feature_sets,
                 pymfe_groups,
                 pymfe_summary,
@@ -392,41 +435,34 @@ def _build_parallel(
                 cache_identity,
                 use_cache,
             )
-            futures[future] = dataset
-
+            for dataset, task_id, repeat, fold in split_units
+        ]
         completed_iter = as_completed(futures)
         if has_tqdm:
-            completed_iter = tqdm(completed_iter, total=total_datasets, desc="Meta-features", unit="dataset")
+            completed_iter = tqdm(completed_iter, total=total_splits, desc="Meta-features", unit="split")
 
-        for idx, future in enumerate(completed_iter, start=1):
-            dataset_name, dataset_rows, n_cached, n_computed, error = future.result()
+        for future in completed_iter:
+            dataset, repeat, fold, row, was_cached, was_computed, error = future.result()
             if error is not None:
-                failed_datasets.append((dataset_name, error))
-                logger.warning("Meta-features [%d/%d] %s: FAILED — %s", idx, total_datasets, dataset_name, error)
-            else:
-                rows.extend(dataset_rows)
-                total_cached_splits += n_cached
-                total_computed_splits += n_computed
-                if not has_tqdm:
-                    logger.info(
-                        "Meta-features [%d/%d] %s: done (%d cached, %d computed; elapsed %s)",
-                        idx,
-                        total_datasets,
-                        dataset_name,
-                        n_cached,
-                        n_computed,
-                        _format_elapsed(time.perf_counter() - overall_start),
-                    )
+                failed.append((dataset, repeat, fold, error))
+                logger.warning("Meta-features %s r%d f%d: FAILED — %s", dataset, repeat, fold, error)
+                continue
+            rows_by_dataset.setdefault(dataset, []).append(row)
+            if was_cached:
+                total_cached += 1
+            if was_computed:
+                total_computed += 1
     finally:
         executor.shutdown(wait=True)
 
-    if failed_datasets:
-        summary = "; ".join(f"{name}: {err}" for name, err in failed_datasets)
-        raise RuntimeError(
-            f"Meta-feature extraction failed for {len(failed_datasets)}/{total_datasets} dataset(s): {summary}"
-        )
+    if failed:
+        summary = "; ".join(f"{d} r{r} f{f}: {err}" for d, r, f, err in failed)
+        raise RuntimeError(f"Meta-feature extraction failed for {len(failed)}/{total_splits} split(s): {summary}")
 
-    return rows, total_cached_splits, total_computed_splits
+    rows: list[dict[str, float]] = []
+    for dataset_rows in rows_by_dataset.values():
+        rows.extend(dataset_rows)
+    return rows, total_cached, total_computed
 
 
 __all__ = [
