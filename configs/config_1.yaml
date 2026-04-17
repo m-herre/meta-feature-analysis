@@ -13,30 +13,38 @@ groups:
   tfm:
     config_types: [TABDPT_GPU, TABSTAR, TABICLV2, TABICL_GPU, TABPFNV2_GPU, TABPFN-V2.6, REALTABPFN-V2.5]
     label: "transformer-based"
+  tabpfnv2:
+    config_types: [TABPFNV2_GPU]
+    label: "tabpfnv2"
+  tabpfnv26:
+    config_types: [TABPFN-V2.6]
+    label: "tabpfnv26"
+  
 
 comparisons:
-  - name: nn_vs_tree
-    group_a: nn
-    group_b: tree
+  - name: tabpfn_old_vs_new
+    group_a: tabpfnv2
+    group_b: tabpfnv26
     expected_direction: null
 
 analysis:
   unit: dataset
   error_column: metric_error
   selection_error_column: metric_error_val
-  method_variant: tuned
+  method_variant: default
   exclude_methods_containing: [AutoGluon]
 
 metafeatures:
-  feature_sets: [basic, pymfe]
+  # feature_sets: [basic, pymfe]
+  feature_sets: [basic]
   pymfe_groups: 
     - general
-    - clustering
+    # - clustering
     # - complexity
     - statistical
     - info-theory
-    - concept
-    - itemset
+    # - concept
+    # - itemset
     # - landmarking
     # - model-based
   pymfe_summary: [mean, sd]
