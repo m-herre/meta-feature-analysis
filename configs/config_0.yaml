@@ -26,13 +26,14 @@ analysis:
   selection_error_column: metric_error_val
   method_variant: tuned
   exclude_methods_containing: [AutoGluon]
+  exclude_problem_types: [regression]  # any subset of: regression, binary, multiclass
 
 metafeatures:
   feature_sets: [basic, pymfe]
   pymfe_groups: 
     - general
-    # - clustering
-    # - complexity
+    - clustering
+    - complexity
     - statistical
     - info-theory
     # - concept
