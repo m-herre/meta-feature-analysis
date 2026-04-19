@@ -84,24 +84,27 @@ def extract_split_metafeatures(
     feature_sets: tuple[str, ...] = ("basic", "irregularity"),
     pymfe_groups: tuple[str, ...] = ("general", "statistical", "info-theory"),
     pymfe_summary: tuple[str, ...] = ("mean", "sd"),
-) -> dict[str, float]:
-    """Compute all configured meta-features for one train split."""
+) -> tuple[dict[str, float], dict[str, str]]:
+    """Compute all configured meta-features for one train split.
+
+    Returns (features, failed_sets). Per-feature-set failures are captured in
+    `failed_sets` so the caller can decide how to handle them globally.
+    """
     X_train, y_train, _, _ = task.get_train_test_split(fold=fold, repeat=repeat)
-    features = {
+    features: dict[str, float] = {
         "dataset": dataset,
         "repeat": repeat,
         "fold": fold,
     }
-    features.update(
-        extract_requested_metafeatures(
-            X_train,
-            y_train,
-            feature_sets=feature_sets,
-            pymfe_groups=pymfe_groups,
-            pymfe_summary=pymfe_summary,
-        )
+    computed, failed_sets = extract_requested_metafeatures(
+        X_train,
+        y_train,
+        feature_sets=feature_sets,
+        pymfe_groups=pymfe_groups,
+        pymfe_summary=pymfe_summary,
     )
-    return features
+    features.update(computed)
+    return features, failed_sets
 
 
 # Per-worker-process single-slot task cache. OpenMLTaskWrapper pins the
@@ -143,10 +146,12 @@ def _process_one_split(
     cache_root: str,
     cache_identity: str,
     use_cache: bool,
-) -> tuple[str, int, int, dict[str, float] | None, bool, bool, str | None]:
+) -> tuple[str, int, int, dict[str, float] | None, bool, bool, str | None, dict[str, str]]:
     """Handle one (dataset, repeat, fold).
 
-    Returns (dataset, repeat, fold, row, was_cached, was_computed, error).
+    Returns (dataset, repeat, fold, row, was_cached, was_computed, error, failed_sets).
+    `error` is only set for unrecoverable failures (e.g. task load). Per-feature-set
+    extraction errors are reported via `failed_sets` and do not invalidate the split.
     """
     try:
         cache_path = Path(cache_root)
@@ -154,9 +159,9 @@ def _process_one_split(
         if use_cache and split_path.exists():
             cached_row = _read_cached_split(split_path, cache_identity)
             if cached_row is not None:
-                return dataset, repeat, fold, cached_row, True, False, None
+                return dataset, repeat, fold, cached_row, True, False, None, {}
         task = _get_cached_task(task_id)
-        split_row = extract_split_metafeatures(
+        split_row, failed_sets = extract_split_metafeatures(
             task,
             dataset,
             repeat,
@@ -169,9 +174,9 @@ def _process_one_split(
             split_path.parent.mkdir(parents=True, exist_ok=True)
             frame = pd.DataFrame([{**split_row, SPLIT_CACHE_HASH_COLUMN: cache_identity}])
             frame.to_parquet(split_path, index=False)
-        return dataset, repeat, fold, split_row, False, True, None
+        return dataset, repeat, fold, split_row, False, True, None, failed_sets
     except Exception as exc:
-        return dataset, repeat, fold, None, False, False, f"{type(exc).__name__}: {exc}"
+        return dataset, repeat, fold, None, False, False, f"{type(exc).__name__}: {exc}", {}
 
 
 def build_metafeature_table(
@@ -231,7 +236,7 @@ def build_metafeature_table(
         )
 
     if resolved_n_jobs <= 1:
-        rows, total_cached_splits, total_computed_splits = _build_sequential(
+        rows, total_cached_splits, total_computed_splits, failed_feature_sets = _build_sequential(
             dataset_tasks=dataset_tasks,
             feature_sets=feature_sets,
             pymfe_groups=pymfe_groups,
@@ -242,7 +247,7 @@ def build_metafeature_table(
             overall_start=overall_start,
         )
     else:
-        rows, total_cached_splits, total_computed_splits = _build_parallel(
+        rows, total_cached_splits, total_computed_splits, failed_feature_sets = _build_parallel(
             dataset_tasks=dataset_tasks,
             feature_sets=feature_sets,
             pymfe_groups=pymfe_groups,
@@ -265,9 +270,44 @@ def build_metafeature_table(
         total_cached_splits,
         total_computed_splits,
     )
-    if "irregularity" not in metafeature_table.columns and "irregularity" not in feature_sets:
+
+    _log_failed_feature_sets(failed_feature_sets, total_splits=len(metafeature_table))
+
+    if "irregularity" not in feature_sets and "irregularity" not in metafeature_table.columns:
         return metafeature_table
     return add_irregularity_proxy(metafeature_table, components=irregularity_components)
+
+
+def _log_failed_feature_sets(
+    failed_feature_sets: dict[str, dict[tuple[str, int, int], str]],
+    *,
+    total_splits: int,
+) -> None:
+    """Emit one WARNING per feature set that failed on any split.
+
+    No columns are dropped: splits that failed a feature set simply lack
+    its columns in their per-split row, so the aggregated table carries
+    NaN for those (split, feature) cells while preserving values from the
+    splits that did succeed.
+    """
+    if not failed_feature_sets:
+        return
+    for set_name, failures in failed_feature_sets.items():
+        example_key, example_err = next(iter(failures.items()))
+        dataset, repeat, fold = example_key
+        affected_datasets = sorted({d for d, _, _ in failures})
+        logger.warning(
+            "Meta-features: feature set `%s` failed on %d/%d split(s) across %d dataset(s) "
+            "(e.g. %s r%d f%d: %s); leaving NaN in affected rows — other splits keep their values.",
+            set_name,
+            len(failures),
+            total_splits,
+            len(affected_datasets),
+            dataset,
+            repeat,
+            fold,
+            example_err,
+        )
 
 
 def _build_sequential(
@@ -280,12 +320,13 @@ def _build_sequential(
     cache_identity: str,
     use_cache: bool,
     overall_start: float,
-) -> tuple[list[dict[str, float]], int, int]:
+) -> tuple[list[dict[str, float]], int, int, dict[str, dict[tuple[str, int, int], str]]]:
     """Sequential per-dataset processing (original behavior)."""
     rows: list[dict[str, float]] = []
     total_cached_splits = 0
     total_computed_splits = 0
     total_datasets = len(dataset_tasks)
+    failed_feature_sets: dict[str, dict[tuple[str, int, int], str]] = {}
     for dataset_index, (dataset, task_id, n_repeats, n_folds) in enumerate(dataset_tasks, start=1):
         task = None
         if n_repeats is None or n_folds is None:
@@ -324,7 +365,7 @@ def _build_sequential(
                     _, _, n_samples = task.get_split_dimensions()
                     if n_samples != 1:
                         raise ValueError("Expected exactly one sample per (repeat, fold) split.")
-                split_row = extract_split_metafeatures(
+                split_row, split_failed_sets = extract_split_metafeatures(
                     task,
                     dataset,
                     repeat,
@@ -333,6 +374,16 @@ def _build_sequential(
                     pymfe_groups=pymfe_groups,
                     pymfe_summary=pymfe_summary,
                 )
+                for set_name, err in split_failed_sets.items():
+                    failed_feature_sets.setdefault(set_name, {})[(dataset, repeat, fold)] = err
+                    logger.warning(
+                        "Meta-features %s r%d f%d: feature set `%s` failed — %s",
+                        dataset,
+                        repeat,
+                        fold,
+                        set_name,
+                        err,
+                    )
                 rows.append(split_row)
                 dataset_computed_splits += 1
                 if use_cache:
@@ -351,7 +402,7 @@ def _build_sequential(
             dataset_computed_splits,
             _format_elapsed(time.perf_counter() - overall_start),
         )
-    return rows, total_cached_splits, total_computed_splits
+    return rows, total_cached_splits, total_computed_splits, failed_feature_sets
 
 
 def _build_parallel(
@@ -366,7 +417,7 @@ def _build_parallel(
     overall_start: float,
     n_jobs: int,
     backend: str,
-) -> tuple[list[dict[str, float]], int, int]:
+) -> tuple[list[dict[str, float]], int, int, dict[str, dict[tuple[str, int, int], str]]]:
     """Parallel per-split processing: one future per (dataset, repeat, fold).
 
     Finer granularity than per-dataset keeps the process pool saturated even
@@ -404,6 +455,7 @@ def _build_parallel(
     total_cached = 0
     total_computed = 0
     failed: list[tuple[str, int, int, str]] = []
+    failed_feature_sets: dict[str, dict[tuple[str, int, int], str]] = {}
     rows_by_dataset: dict[str, list[dict[str, float]]] = {dataset: [] for dataset, *_ in dataset_tasks}
 
     try:
@@ -425,7 +477,7 @@ def _build_parallel(
 
     def _record(result_tuple: tuple) -> None:
         nonlocal total_cached, total_computed
-        dataset_r, repeat_r, fold_r, row, was_cached, was_computed, error = result_tuple
+        dataset_r, repeat_r, fold_r, row, was_cached, was_computed, error, split_failed_sets = result_tuple
         completed_keys.add((dataset_r, repeat_r, fold_r))
         if progress is not None:
             progress.update(1)
@@ -433,6 +485,16 @@ def _build_parallel(
             failed.append((dataset_r, repeat_r, fold_r, error))
             logger.warning("Meta-features %s r%d f%d: FAILED — %s", dataset_r, repeat_r, fold_r, error)
             return
+        for set_name, err in split_failed_sets.items():
+            failed_feature_sets.setdefault(set_name, {})[(dataset_r, repeat_r, fold_r)] = err
+            logger.warning(
+                "Meta-features %s r%d f%d: feature set `%s` failed — %s",
+                dataset_r,
+                repeat_r,
+                fold_r,
+                set_name,
+                err,
+            )
         rows_by_dataset.setdefault(dataset_r, []).append(row)
         if was_cached:
             total_cached += 1
@@ -534,7 +596,7 @@ def _build_parallel(
     rows: list[dict[str, float]] = []
     for dataset_rows in rows_by_dataset.values():
         rows.extend(dataset_rows)
-    return rows, total_cached, total_computed
+    return rows, total_cached, total_computed, failed_feature_sets
 
 
 __all__ = [
