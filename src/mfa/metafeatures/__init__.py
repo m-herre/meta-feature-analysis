@@ -4,6 +4,7 @@ import hashlib
 import json
 import time
 from concurrent.futures import as_completed
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Any
 
@@ -419,41 +420,112 @@ def _build_parallel(
         n_jobs,
     )
 
-    executor = get_executor(backend, max_workers=n_jobs)
-    try:
-        futures = [
-            executor.submit(
-                _process_one_split,
-                dataset,
-                task_id,
-                repeat,
-                fold,
-                feature_sets,
-                pymfe_groups,
-                pymfe_summary,
-                cache_root_str,
-                cache_identity,
-                use_cache,
-            )
-            for dataset, task_id, repeat, fold in split_units
-        ]
-        completed_iter = as_completed(futures)
-        if has_tqdm:
-            completed_iter = tqdm(completed_iter, total=total_splits, desc="Meta-features", unit="split")
+    completed_keys: set[tuple[str, int, int]] = set()
+    progress = tqdm(total=total_splits, desc="Meta-features", unit="split") if has_tqdm else None
 
-        for future in completed_iter:
-            dataset, repeat, fold, row, was_cached, was_computed, error = future.result()
-            if error is not None:
-                failed.append((dataset, repeat, fold, error))
-                logger.warning("Meta-features %s r%d f%d: FAILED — %s", dataset, repeat, fold, error)
-                continue
-            rows_by_dataset.setdefault(dataset, []).append(row)
-            if was_cached:
-                total_cached += 1
-            if was_computed:
-                total_computed += 1
+    def _record(result_tuple: tuple) -> None:
+        nonlocal total_cached, total_computed
+        dataset_r, repeat_r, fold_r, row, was_cached, was_computed, error = result_tuple
+        completed_keys.add((dataset_r, repeat_r, fold_r))
+        if progress is not None:
+            progress.update(1)
+        if error is not None:
+            failed.append((dataset_r, repeat_r, fold_r, error))
+            logger.warning("Meta-features %s r%d f%d: FAILED — %s", dataset_r, repeat_r, fold_r, error)
+            return
+        rows_by_dataset.setdefault(dataset_r, []).append(row)
+        if was_cached:
+            total_cached += 1
+        if was_computed:
+            total_computed += 1
+
+    # A BrokenProcessPool (commonly an OOM-killed worker) poisons every
+    # pending future in the executor, so a single bad split would
+    # otherwise abort the whole run despite per-split parquet caches
+    # already persisting completed work. We harvest what landed,
+    # rebuild the pool once for the splits that did not return, and
+    # fall back to sequential in-process execution if the pool breaks
+    # again — the cache means retries are idempotent.
+    pending = list(split_units)
+    max_pool_break_retries = 1
+    pool_break_retries = 0
+    try:
+        while pending:
+            executor = get_executor(backend, max_workers=n_jobs)
+            broken = False
+            try:
+                futures = [
+                    executor.submit(
+                        _process_one_split,
+                        dataset,
+                        task_id,
+                        repeat,
+                        fold,
+                        feature_sets,
+                        pymfe_groups,
+                        pymfe_summary,
+                        cache_root_str,
+                        cache_identity,
+                        use_cache,
+                    )
+                    for dataset, task_id, repeat, fold in pending
+                ]
+                for future in as_completed(futures):
+                    try:
+                        _record(future.result())
+                    except BrokenProcessPool as exc:
+                        broken = True
+                        logger.warning(
+                            "Meta-features: process pool broken (%s); %d/%d split(s) harvested, retrying remainder.",
+                            exc,
+                            len(completed_keys),
+                            total_splits,
+                        )
+                        break
+            finally:
+                executor.shutdown(wait=not broken, cancel_futures=broken)
+
+            if not broken:
+                pending = []
+                break
+
+            pending = [unit for unit in pending if (unit[0], unit[2], unit[3]) not in completed_keys]
+            if not pending:
+                break
+
+            pool_break_retries += 1
+            if pool_break_retries > max_pool_break_retries:
+                logger.warning(
+                    "Meta-features: pool broke %d time(s); finishing %d remaining split(s) sequentially in-process.",
+                    pool_break_retries,
+                    len(pending),
+                )
+                for dataset, task_id, repeat, fold in pending:
+                    _record(
+                        _process_one_split(
+                            dataset,
+                            task_id,
+                            repeat,
+                            fold,
+                            feature_sets,
+                            pymfe_groups,
+                            pymfe_summary,
+                            cache_root_str,
+                            cache_identity,
+                            use_cache,
+                        )
+                    )
+                pending = []
+            else:
+                logger.warning(
+                    "Meta-features: retrying %d remaining split(s) in a fresh pool (attempt %d/%d).",
+                    len(pending),
+                    pool_break_retries,
+                    max_pool_break_retries,
+                )
     finally:
-        executor.shutdown(wait=True)
+        if progress is not None:
+            progress.close()
 
     if failed:
         summary = "; ".join(f"{d} r{r} f{f}: {err}" for d, r, f, err in failed)

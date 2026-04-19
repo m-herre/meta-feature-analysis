@@ -35,8 +35,8 @@ analysis:
   exclude_methods_containing: [AutoGluon]
 
 metafeatures:
-  # feature_sets: [basic, pymfe]
-  feature_sets: [basic]
+  feature_sets: [basic, pymfe]
+  # feature_sets: [basic]
   pymfe_groups: 
     - general
     # - clustering

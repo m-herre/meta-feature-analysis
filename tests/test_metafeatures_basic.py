@@ -126,6 +126,147 @@ def test_build_metafeature_table_logs_dataset_progress(
     assert any("Meta-features: complete in 00:00:12" in message for message in messages)
 
 
+class _ImmediateExecutor:
+    """Executes submissions inline, optionally raising BrokenProcessPool on marked units.
+
+    `break_on` contains (dataset, repeat, fold) keys whose future will carry a
+    BrokenProcessPool exception, mirroring what `ProcessPoolExecutor` does to
+    every pending future after a worker dies.
+    """
+
+    def __init__(self, break_on: set[tuple[str, int, int]] | None = None) -> None:
+        self.break_on = break_on or set()
+        self.submitted_keys: list[tuple[str, int, int]] = []
+        self.shutdown_calls: list[dict] = []
+
+    def submit(self, fn, *args, **kwargs):
+        from concurrent.futures import Future
+        from concurrent.futures.process import BrokenProcessPool
+
+        dataset, _task_id, repeat, fold = args[0], args[1], args[2], args[3]
+        key = (dataset, repeat, fold)
+        self.submitted_keys.append(key)
+        future: Future = Future()
+        if key in self.break_on:
+            future.set_exception(BrokenProcessPool(f"simulated for {key}"))
+        else:
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except Exception as exc:
+                future.set_exception(exc)
+        return future
+
+    def shutdown(self, *, wait: bool = True, cancel_futures: bool = False) -> None:
+        self.shutdown_calls.append({"wait": wait, "cancel_futures": cancel_futures})
+
+
+def _install_fake_openml(monkeypatch) -> None:
+    class FakeTask:
+        def get_split_dimensions(self) -> tuple[int, int, int]:
+            return 1, 3, 1
+
+        def get_train_test_split(self, *, fold: int, repeat: int):
+            X = pd.DataFrame({"num": [1.0, 2.0, 3.0, 4.0]})
+            y = pd.Series([0, 1, 0, 1])
+            return X, y, X, y
+
+    monkeypatch.setattr(
+        "tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id",
+        lambda task_id: FakeTask(),
+    )
+
+
+def test_build_metafeature_table_retries_broken_process_pool(monkeypatch, tmp_path: Path) -> None:
+    _install_fake_openml(monkeypatch)
+
+    metadata = pd.DataFrame(
+        {
+            "dataset": ["dataset_a"],
+            "tid": [1],
+            "n_repeats": [1],
+            "n_folds": [3],
+        }
+    )
+
+    executors = [
+        _ImmediateExecutor(break_on={("dataset_a", 0, 1)}),
+        _ImmediateExecutor(),
+    ]
+    spawned: list[_ImmediateExecutor] = []
+
+    def fake_get_executor(backend: str, max_workers: int) -> _ImmediateExecutor:
+        exec_ = executors.pop(0)
+        spawned.append(exec_)
+        return exec_
+
+    monkeypatch.setattr("mfa.metafeatures.get_executor", fake_get_executor)
+    # Force deterministic completion order so the "retry only drops un-harvested
+    # splits" assertion below is stable across test runs.
+    monkeypatch.setattr("mfa.metafeatures.as_completed", lambda futures: list(futures))
+
+    table = build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        cache_version=1,
+        n_jobs=2,
+        feature_sets=("basic",),
+    )
+
+    assert len(table) == 3
+    assert set(zip(table["repeat"], table["fold"], strict=True)) == {(0, 0), (0, 1), (0, 2)}
+    assert len(spawned) == 2, "pool should be rebuilt exactly once after a break"
+    # First pool submits all three splits; second pool retries only fold 1
+    # (broken) and fold 2 (never harvested because the break short-circuited
+    # iteration). fold 0 completed before the break, so must not be retried.
+    assert spawned[0].submitted_keys == [("dataset_a", 0, 0), ("dataset_a", 0, 1), ("dataset_a", 0, 2)]
+    assert spawned[1].submitted_keys == [("dataset_a", 0, 1), ("dataset_a", 0, 2)]
+    assert spawned[0].shutdown_calls[0]["cancel_futures"] is True
+
+
+def test_build_metafeature_table_falls_back_to_sequential_after_repeated_pool_breaks(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _install_fake_openml(monkeypatch)
+
+    metadata = pd.DataFrame(
+        {
+            "dataset": ["dataset_a"],
+            "tid": [1],
+            "n_repeats": [1],
+            "n_folds": [3],
+        }
+    )
+
+    # Both pools break on the same split; the third attempt must be sequential.
+    executors = [
+        _ImmediateExecutor(break_on={("dataset_a", 0, 2)}),
+        _ImmediateExecutor(break_on={("dataset_a", 0, 2)}),
+    ]
+    spawned: list[_ImmediateExecutor] = []
+
+    def fake_get_executor(backend: str, max_workers: int) -> _ImmediateExecutor:
+        if not executors:
+            raise AssertionError("fallback must not spawn a third pool")
+        exec_ = executors.pop(0)
+        spawned.append(exec_)
+        return exec_
+
+    monkeypatch.setattr("mfa.metafeatures.get_executor", fake_get_executor)
+
+    table = build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        cache_version=1,
+        n_jobs=2,
+        feature_sets=("basic",),
+    )
+
+    assert len(table) == 3
+    assert len(spawned) == 2
+
+
 def test_single_slot_task_cache_evicts_on_new_id(monkeypatch) -> None:
     """_get_cached_task must release the previous wrapper before loading a new one.
 
