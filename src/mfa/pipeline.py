@@ -62,6 +62,26 @@ def _get_task_metadata(task_metadata=None):
     return load_task_metadata()
 
 
+def _apply_problem_type_filter(
+    dataset_list: list[str] | None,
+    task_metadata: pd.DataFrame,
+    *,
+    excluded_problem_types: Sequence[str],
+) -> list[str] | None:
+    if not excluded_problem_types:
+        return dataset_list
+    if "problem_type" not in task_metadata.columns or "dataset" not in task_metadata.columns:
+        raise ValueError(
+            "task_metadata must include `dataset` and `problem_type` columns to apply `exclude_problem_types`."
+        )
+    excluded = set(excluded_problem_types)
+    allowed_datasets = task_metadata.loc[~task_metadata["problem_type"].isin(excluded), "dataset"].tolist()
+    allowed_set = set(allowed_datasets)
+    if dataset_list is None:
+        return sorted(allowed_set)
+    return sorted(set(dataset_list) & allowed_set)
+
+
 def _serialize_correlation_result(result: CorrelationResult) -> dict:
     return {
         "comparison_name": result.comparison_name,
@@ -198,6 +218,12 @@ def run_analysis(
     cache_version_hash = _cache_version_hash(config)
     cache_dir = config.cache.directory
     dataset_list = sorted(datasets) if datasets is not None else None
+    metadata = _get_task_metadata(task_metadata)
+    dataset_list = _apply_problem_type_filter(
+        dataset_list,
+        metadata,
+        excluded_problem_types=config.analysis.exclude_problem_types,
+    )
     comparison_names = ", ".join(comparison.name for comparison in config.comparisons)
     n_jobs = resolve_n_jobs(config.parallelism.n_jobs)
     backend = config.parallelism.backend
@@ -240,7 +266,6 @@ def run_analysis(
 
     validate_groups_against_data(raw_results, config.groups)
 
-    metadata = _get_task_metadata(task_metadata)
     metafeature_hash = compute_stage_hash(
         "metafeatures",
         cache_version_hash,

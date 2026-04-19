@@ -36,6 +36,7 @@ analysis:
   selection_error_column: metric_error_val
   method_variant: tuned
   exclude_methods_containing: [AutoGluon]
+  exclude_problem_types: []  # any subset of: regression, binary, multiclass
 
 metafeatures:
   feature_sets: [basic, irregularity]

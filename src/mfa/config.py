@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +11,7 @@ from .types import AnalysisUnit, ComparisonSpec, CorrelationMethod, FDRMethod, G
 
 VALID_METHOD_VARIANTS = {"default", "tuned", "tuned_ensemble"}
 VALID_EXPECTED_DIRECTIONS = {None, "positive", "negative"}
+VALID_PROBLEM_TYPES = {"regression", "binary", "multiclass"}
 
 
 class ConfigValidationError(ValueError):
@@ -24,6 +25,7 @@ class AnalysisSettings:
     selection_error_column: str | None = "metric_error_val"
     method_variant: str = "tuned"
     exclude_methods_containing: tuple[str, ...] = ()
+    exclude_problem_types: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -172,12 +174,23 @@ def _parse_analysis(raw_analysis: Any) -> AnalysisSettings:
     exclude_methods = tuple(mapping.get("exclude_methods_containing", []))
     if not all(isinstance(value, str) for value in exclude_methods):
         raise ConfigValidationError("`analysis.exclude_methods_containing` must be a list of strings.")
+    exclude_problem_types = tuple(mapping.get("exclude_problem_types", []))
+    if not all(isinstance(value, str) for value in exclude_problem_types):
+        raise ConfigValidationError("`analysis.exclude_problem_types` must be a list of strings.")
+    invalid_problem_types = [value for value in exclude_problem_types if value not in VALID_PROBLEM_TYPES]
+    if invalid_problem_types:
+        valid = ", ".join(sorted(VALID_PROBLEM_TYPES))
+        raise ConfigValidationError(
+            f"`analysis.exclude_problem_types` contains invalid values {invalid_problem_types}; "
+            f"must be a subset of: {valid}."
+        )
     return AnalysisSettings(
         unit=_parse_enum(AnalysisUnit, mapping.get("unit", AnalysisUnit.DATASET.value), "analysis.unit"),
         error_column=error_column,
         selection_error_column=selection_error_column,
         method_variant=method_variant,
         exclude_methods_containing=exclude_methods,
+        exclude_problem_types=exclude_problem_types,
     )
 
 
@@ -265,10 +278,27 @@ def parse_config(raw_config: dict[str, Any]) -> AnalysisConfig:
     )
 
 
+def _resolve_project_root(config_path: Path) -> Path:
+    resolved_path = config_path.expanduser().resolve()
+    if resolved_path.parent.name == "configs":
+        return resolved_path.parent.parent
+    return resolved_path.parent
+
+
 def load_config(path: str | Path) -> AnalysisConfig:
-    config_path = Path(path)
+    config_path = Path(path).expanduser().resolve()
     with config_path.open("r", encoding="utf-8") as infile:
         raw_config = yaml.safe_load(infile) or {}
     if not isinstance(raw_config, dict):
         raise ConfigValidationError("Top-level YAML document must be a mapping.")
-    return parse_config(raw_config)
+    config = parse_config(raw_config)
+    if config.cache.directory.is_absolute():
+        return config
+    project_root = _resolve_project_root(config_path)
+    return replace(
+        config,
+        cache=replace(
+            config.cache,
+            directory=(project_root / config.cache.directory).resolve(),
+        ),
+    )

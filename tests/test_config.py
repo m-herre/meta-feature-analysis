@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from mfa.cache import compute_config_hash
 from mfa.config import ConfigValidationError, load_config, parse_config
@@ -16,6 +17,20 @@ def test_load_default_config() -> None:
     assert config.statistics.correlation_method == CorrelationMethod.SPEARMAN
     assert config.comparisons[0].group_a.name == "nn"
     assert config.comparisons[0].group_b.name == "gbdt"
+    assert config.cache.directory == Path.cwd().resolve() / ".mfa_cache"
+
+
+def test_load_config_resolves_cache_directory_relative_to_project_root(tmp_path, config_dict) -> None:
+    project_dir = tmp_path / "meta-feature-analysis"
+    config_dir = project_dir / "configs"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "config.yaml"
+    with config_path.open("w", encoding="utf-8") as outfile:
+        yaml.safe_dump(config_dict, outfile)
+
+    config = load_config(config_path)
+
+    assert config.cache.directory == project_dir / ".mfa_cache"
 
 
 def test_parse_config_rejects_unknown_group_reference(config_dict) -> None:
@@ -72,6 +87,24 @@ def test_parse_config_rejects_invalid_backend(config_dict) -> None:
     config_dict["parallelism"] = {"backend": "gpu"}
     with pytest.raises(ConfigValidationError):
         parse_config(config_dict)
+
+
+def test_parse_config_accepts_exclude_problem_types(config_dict) -> None:
+    config_dict["analysis"]["exclude_problem_types"] = ["regression"]
+    config = parse_config(config_dict)
+    assert config.analysis.exclude_problem_types == ("regression",)
+
+
+def test_parse_config_rejects_invalid_problem_type(config_dict) -> None:
+    config_dict["analysis"]["exclude_problem_types"] = ["ordinal"]
+    with pytest.raises(ConfigValidationError):
+        parse_config(config_dict)
+
+
+def test_parse_config_defaults_exclude_problem_types_empty(config_dict) -> None:
+    config_dict["analysis"].pop("exclude_problem_types", None)
+    config = parse_config(config_dict)
+    assert config.analysis.exclude_problem_types == ()
 
 
 def test_config_hash_is_deterministic(analysis_config) -> None:
