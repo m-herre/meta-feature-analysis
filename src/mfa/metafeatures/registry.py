@@ -23,30 +23,23 @@ def extract_requested_metafeatures(
 ) -> tuple[dict[str, float], dict[str, str]]:
     """Extract all configured feature sets for one training split.
 
-    Each feature set is computed in isolation; if one raises, the error is
-    recorded in the returned `failed_sets` mapping (set name -> error repr)
-    and the remaining sets still run. The split still produces a row with
-    whatever sets did succeed — the caller aggregates per-split rows into
-    a table where failing splits simply carry NaN for the missing feature
-    columns, preserving both the dataset and the other feature sets.
+    Only `pymfe` is treated as best-effort: it calls an external library that
+    can fail on unusual inputs (e.g. RecursionError on very wide data), and
+    losing optional features is preferable to aborting the run. `basic` and
+    `irregularity` are pure in-process numerics — if they raise, something is
+    genuinely broken and the error must surface, not be downgraded to NaN.
     """
     validate_feature_sets(feature_sets)
     features: dict[str, float] = {}
     failed_sets: dict[str, str] = {}
 
     if "basic" in feature_sets:
-        try:
-            features.update(compute_basic_metafeatures(X_train))
-        except Exception as exc:
-            failed_sets["basic"] = f"{type(exc).__name__}: {exc}"
+        features.update(compute_basic_metafeatures(X_train))
 
     if "irregularity" in feature_sets:
-        try:
-            categorical_columns = get_categorical_columns(X_train)
-            X_num = X_train.drop(columns=categorical_columns, errors="ignore")
-            features.update(compute_irregularity_components(X_num))
-        except Exception as exc:
-            failed_sets["irregularity"] = f"{type(exc).__name__}: {exc}"
+        categorical_columns = get_categorical_columns(X_train)
+        X_num = X_train.drop(columns=categorical_columns, errors="ignore")
+        features.update(compute_irregularity_components(X_num))
 
     if "pymfe" in feature_sets:
         try:

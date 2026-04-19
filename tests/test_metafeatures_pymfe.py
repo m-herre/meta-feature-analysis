@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from mfa.metafeatures import build_metafeature_table
 from mfa.metafeatures.pymfe_features import extract_pymfe_features
@@ -170,3 +171,123 @@ def test_build_metafeature_table_keeps_pymfe_columns_when_one_dataset_fails(
     # Basic features still computed for both datasets.
     assert healthy["n"] == 4
     assert poisoned["n"] == 7
+
+
+def test_extract_requested_metafeatures_propagates_basic_failures(monkeypatch) -> None:
+    """basic and irregularity are not best-effort — internal failures must surface."""
+    import mfa.metafeatures.registry as registry
+
+    def exploding_basic(_X_train):
+        raise ValueError("deliberate basic failure")
+
+    monkeypatch.setattr(registry, "compute_basic_metafeatures", exploding_basic)
+
+    with pytest.raises(ValueError, match="deliberate basic failure"):
+        extract_requested_metafeatures(
+            pd.DataFrame({"num": [1.0, 2.0, 3.0]}),
+            pd.Series([0, 1, 0]),
+            feature_sets=("basic",),
+            pymfe_groups=(),
+            pymfe_summary=(),
+        )
+
+
+def test_extract_requested_metafeatures_propagates_irregularity_failures(monkeypatch) -> None:
+    import mfa.metafeatures.registry as registry
+
+    def exploding_irregularity(_X_num):
+        raise RuntimeError("deliberate irregularity failure")
+
+    monkeypatch.setattr(registry, "compute_irregularity_components", exploding_irregularity)
+
+    with pytest.raises(RuntimeError, match="deliberate irregularity failure"):
+        extract_requested_metafeatures(
+            pd.DataFrame({"num": [1.0, 2.0, 3.0]}),
+            pd.Series([0, 1, 0]),
+            feature_sets=("irregularity",),
+            pymfe_groups=(),
+            pymfe_summary=(),
+        )
+
+
+def test_pymfe_failure_provenance_survives_rerun_from_cache(monkeypatch, tmp_path: Path) -> None:
+    """A cached split that failed pymfe must still report the failure on rerun."""
+
+    class FailingMFE:
+        def __init__(self, *, groups, summary) -> None:
+            pass
+
+        def fit(self, X, y, cat_cols) -> None:
+            raise RecursionError("maximum recursion depth exceeded")
+
+        def extract(self):
+            raise AssertionError("unreachable")
+
+    pymfe_module = types.ModuleType("pymfe")
+    pymfe_module.__path__ = []
+    mfe_module = types.ModuleType("pymfe.mfe")
+    mfe_module.MFE = FailingMFE
+    pymfe_module.mfe = mfe_module
+    monkeypatch.setitem(sys.modules, "pymfe", pymfe_module)
+    monkeypatch.setitem(sys.modules, "pymfe.mfe", mfe_module)
+
+    class FakeTask:
+        def get_split_dimensions(self) -> tuple[int, int, int]:
+            return 1, 1, 1
+
+        def get_train_test_split(self, *, fold: int, repeat: int):
+            X = pd.DataFrame({"num": [1.0, 2.0, 3.0, 4.0]})
+            y = pd.Series([0, 1, 0, 1])
+            return X, y, X, y
+
+    monkeypatch.setattr(
+        "tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id",
+        lambda task_id: FakeTask(),
+    )
+
+    metadata = pd.DataFrame(
+        {"dataset": ["poisoned"], "tid": [1], "n_repeats": [1], "n_folds": [1]}
+    )
+
+    # First run: pymfe fails, the split still caches basic features and a failed-sets marker.
+    warnings_first: list[str] = []
+    monkeypatch.setattr(
+        "mfa.metafeatures.logger.warning",
+        lambda message, *args: warnings_first.append(message % args if args else message),
+    )
+    build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        feature_sets=("basic", "pymfe"),
+        pymfe_groups=("general",),
+        pymfe_summary=("mean",),
+        n_jobs=1,
+    )
+    assert any("`pymfe` failed on 1/1 split(s)" in message for message in warnings_first)
+
+    # Second run: cache hit. No extractor is invoked, but the failure summary must still fire.
+    def must_not_fit(*args, **kwargs):
+        raise AssertionError("cache hit must not re-invoke pymfe")
+
+    mfe_module.MFE = type(
+        "BoomMFE",
+        (),
+        {"__init__": lambda self, **_: None, "fit": must_not_fit, "extract": must_not_fit},
+    )
+
+    warnings_second: list[str] = []
+    monkeypatch.setattr(
+        "mfa.metafeatures.logger.warning",
+        lambda message, *args: warnings_second.append(message % args if args else message),
+    )
+    build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        feature_sets=("basic", "pymfe"),
+        pymfe_groups=("general",),
+        pymfe_summary=("mean",),
+        n_jobs=1,
+    )
+    assert any("`pymfe` failed on 1/1 split(s)" in message for message in warnings_second)

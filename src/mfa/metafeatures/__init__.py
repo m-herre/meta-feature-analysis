@@ -48,6 +48,12 @@ def _metadata_task_id(row) -> int:
 
 
 SPLIT_CACHE_HASH_COLUMN = "_cache_identity_hash"
+SPLIT_CACHE_FAILED_SETS_COLUMN = "_cache_failed_sets"
+_SPLIT_CACHE_INTERNAL_COLUMNS = (
+    SPLIT_CACHE_HASH_COLUMN,
+    SPLIT_CACHE_FAILED_SETS_COLUMN,
+    "_feature_set_hash",
+)
 
 
 def _split_cache_path(cache_dir: Path, dataset: str, repeat: int, fold: int) -> Path:
@@ -62,7 +68,23 @@ def _metadata_split_dimensions(row) -> tuple[int | None, int | None]:
     return int(n_repeats), int(n_folds)
 
 
-def _read_cached_split(split_path: Path, cache_identity: str) -> dict[str, float] | None:
+def _encode_failed_sets(failed_sets: dict[str, str]) -> str:
+    return json.dumps(failed_sets, sort_keys=True, separators=(",", ":"))
+
+
+def _decode_failed_sets(value) -> dict[str, str]:
+    if value is None or (isinstance(value, float) and pd.isna(value)) or value == "":
+        return {}
+    try:
+        decoded = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(decoded, dict):
+        return {}
+    return {str(k): str(v) for k, v in decoded.items()}
+
+
+def _read_cached_split(split_path: Path, cache_identity: str) -> tuple[dict[str, float], dict[str, str]] | None:
     cached = pd.read_parquet(split_path)
     cached_hash = None
     if SPLIT_CACHE_HASH_COLUMN in cached.columns:
@@ -71,8 +93,12 @@ def _read_cached_split(split_path: Path, cache_identity: str) -> dict[str, float
         cached_hash = cached["_feature_set_hash"].iat[0]
     if cached_hash != cache_identity:
         return None
-    drop_columns = [column for column in (SPLIT_CACHE_HASH_COLUMN, "_feature_set_hash") if column in cached.columns]
-    return cached.drop(columns=drop_columns).iloc[0].to_dict()
+    cached_failed_sets: dict[str, str] = {}
+    if SPLIT_CACHE_FAILED_SETS_COLUMN in cached.columns:
+        cached_failed_sets = _decode_failed_sets(cached[SPLIT_CACHE_FAILED_SETS_COLUMN].iat[0])
+    drop_columns = [column for column in _SPLIT_CACHE_INTERNAL_COLUMNS if column in cached.columns]
+    row = cached.drop(columns=drop_columns).iloc[0].to_dict()
+    return row, cached_failed_sets
 
 
 def extract_split_metafeatures(
@@ -157,9 +183,10 @@ def _process_one_split(
         cache_path = Path(cache_root)
         split_path = _split_cache_path(cache_path, dataset, repeat, fold)
         if use_cache and split_path.exists():
-            cached_row = _read_cached_split(split_path, cache_identity)
-            if cached_row is not None:
-                return dataset, repeat, fold, cached_row, True, False, None, {}
+            cached = _read_cached_split(split_path, cache_identity)
+            if cached is not None:
+                cached_row, cached_failed_sets = cached
+                return dataset, repeat, fold, cached_row, True, False, None, cached_failed_sets
         task = _get_cached_task(task_id)
         split_row, failed_sets = extract_split_metafeatures(
             task,
@@ -172,7 +199,15 @@ def _process_one_split(
         )
         if use_cache:
             split_path.parent.mkdir(parents=True, exist_ok=True)
-            frame = pd.DataFrame([{**split_row, SPLIT_CACHE_HASH_COLUMN: cache_identity}])
+            frame = pd.DataFrame(
+                [
+                    {
+                        **split_row,
+                        SPLIT_CACHE_HASH_COLUMN: cache_identity,
+                        SPLIT_CACHE_FAILED_SETS_COLUMN: _encode_failed_sets(failed_sets),
+                    }
+                ]
+            )
             frame.to_parquet(split_path, index=False)
         return dataset, repeat, fold, split_row, False, True, None, failed_sets
     except Exception as exc:
@@ -352,10 +387,13 @@ def _build_sequential(
             for fold in range(n_folds):
                 split_path = _split_cache_path(cache_root, dataset, repeat, fold)
                 if use_cache and split_path.exists():
-                    cached_row = _read_cached_split(split_path, cache_identity)
-                    if cached_row is not None:
+                    cached = _read_cached_split(split_path, cache_identity)
+                    if cached is not None:
+                        cached_row, cached_failed_sets = cached
                         rows.append(cached_row)
                         dataset_cached_splits += 1
+                        for set_name, err in cached_failed_sets.items():
+                            failed_feature_sets.setdefault(set_name, {})[(dataset, repeat, fold)] = err
                         continue
 
                 if task is None:
@@ -388,7 +426,15 @@ def _build_sequential(
                 dataset_computed_splits += 1
                 if use_cache:
                     split_path.parent.mkdir(parents=True, exist_ok=True)
-                    cached_row = pd.DataFrame([{**split_row, SPLIT_CACHE_HASH_COLUMN: cache_identity}])
+                    cached_row = pd.DataFrame(
+                        [
+                            {
+                                **split_row,
+                                SPLIT_CACHE_HASH_COLUMN: cache_identity,
+                                SPLIT_CACHE_FAILED_SETS_COLUMN: _encode_failed_sets(split_failed_sets),
+                            }
+                        ]
+                    )
                     cached_row.to_parquet(split_path, index=False)
         total_cached_splits += dataset_cached_splits
         total_computed_splits += dataset_computed_splits

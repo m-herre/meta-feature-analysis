@@ -2,9 +2,26 @@ from __future__ import annotations
 
 import warnings
 
+import numpy as np
 import pandas as pd
 
 from .types import AnalysisUnit
+
+
+def _strict_mean(series: pd.Series) -> float:
+    """Mean that propagates NaN: any missing split ⇒ dataset-level NaN.
+
+    Meta-feature predictors can be NaN on a subset of splits when an
+    extractor (e.g. pymfe) fails for that split. A plain mean silently
+    averages over only the successful splits, so the effective sample
+    size per predictor drifts away from delta_norm's (which sees every
+    split). Propagating NaN forces the dataset to drop from per-predictor
+    correlations visibly, via the existing `n_observations` in
+    `CorrelationResult`.
+    """
+    if series.isna().any():
+        return float("nan")
+    return float(np.mean(series))
 
 JOIN_KEY_COLUMNS = ["dataset", "repeat", "fold"]
 GROUP_COLUMNS = [
@@ -54,8 +71,11 @@ def _candidate_numeric_columns(analysis: pd.DataFrame, metafeature_table: pd.Dat
     return list(dict.fromkeys([*numeric_columns, *expected]))
 
 
-def _build_aggregations(analysis: pd.DataFrame, metafeature_table: pd.DataFrame) -> dict[str, tuple[str, str]]:
-    aggregations: dict[str, tuple[str, str]] = {
+def _build_aggregations(analysis: pd.DataFrame, metafeature_table: pd.DataFrame) -> dict[str, tuple[str, object]]:
+    metafeature_column_names = {
+        column for column in metafeature_table.columns if column not in JOIN_KEY_COLUMNS and not column.startswith("_")
+    }
+    aggregations: dict[str, tuple[str, object]] = {
         "n_splits": ("delta_norm", "size"),
     }
     for column in _candidate_numeric_columns(analysis, metafeature_table):
@@ -67,6 +87,8 @@ def _build_aggregations(analysis: pd.DataFrame, metafeature_table: pd.DataFrame)
             aggregations["delta_raw"] = (column, "mean")
             aggregations["delta_raw_std"] = (column, "std")
             aggregations["delta_raw_sem"] = (column, "sem")
+        elif column in metafeature_column_names:
+            aggregations[column] = (column, _strict_mean)
         else:
             aggregations[column] = (column, "mean")
     return aggregations
