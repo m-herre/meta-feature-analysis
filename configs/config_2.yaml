@@ -14,16 +14,16 @@ groups:
     config_types: [TABDPT_GPU, TABSTAR, TABICLV2, TABICL_GPU, TABPFNV2_GPU, TABPFN-V2.6, REALTABPFN-V2.5]
     label: "transformer-based"
   tabpfnv2:
-    config_types: [TABPFNV2_GPU]
-    label: "tabpfnv2"
+    config_types: [REALTABPFN-V2.5]
+    label: "realtabpfnv2"
   tabpfnv26:
     config_types: [TABPFN-V2.6]
     label: "tabpfnv26"
   
 
 comparisons:
-  - name: tabpfn_old_vs_new
-    group_a: tabpfnv2
+  - name: realtabpfnv2_vs_tabpfnv26
+    group_a: realtabpfnv2
     group_b: tabpfnv26
     expected_direction: null
 

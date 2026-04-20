@@ -31,15 +31,15 @@ analysis:
 metafeatures:
   feature_sets: [basic, pymfe]
   pymfe_groups: 
-    - general
-    - clustering
-    - complexity
     - statistical
-    - info-theory
-    # - concept
-    # - itemset
+    - complexity
+    - model-based
+    - general
+    # - clustering
+    # - info-theory
     # - landmarking
-    # - model-based
+    # - concept # Problematic
+    # - itemset
   pymfe_summary: [mean]
   irregularity_components:
     - irreg_min_cov_eig
