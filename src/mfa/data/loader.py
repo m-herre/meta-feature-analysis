@@ -5,7 +5,7 @@ from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 
-from ..config import AnalysisConfig
+from ..config import AnalysisConfig, normalize_method_variants
 
 IDENTITY_RESULT_COLUMNS = [
     "dataset",
@@ -91,7 +91,8 @@ def load_tabarena_results(
     if "config_type" not in df_results.columns:
         raise ValueError("TabArena HPO results must include a `config_type` column.")
 
-    df_results = df_results[df_results["method_subtype"] == config.analysis.method_variant].copy()
+    method_variants = normalize_method_variants(config.analysis.method_variant)
+    df_results = df_results[df_results["method_subtype"].isin(method_variants)].copy()
     if datasets is not None:
         dataset_set = set(datasets)
         df_results = df_results[df_results["dataset"].isin(dataset_set)].copy()

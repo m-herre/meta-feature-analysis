@@ -19,12 +19,36 @@ class ConfigValidationError(ValueError):
     """Raised when the YAML configuration is invalid."""
 
 
+def normalize_method_variants(
+    raw_method_variant: Any,
+    *,
+    field_name: str = "analysis.method_variant",
+) -> tuple[str, ...]:
+    if isinstance(raw_method_variant, str):
+        method_variants = (raw_method_variant,)
+    elif isinstance(raw_method_variant, (list, tuple)):
+        if not raw_method_variant or not all(isinstance(value, str) for value in raw_method_variant):
+            raise ConfigValidationError(f"`{field_name}` must be a non-empty list of strings or a single string.")
+        method_variants = tuple(raw_method_variant)
+    else:
+        raise ConfigValidationError(f"`{field_name}` must be a string or a non-empty list of strings.")
+
+    invalid_variants = [value for value in method_variants if value not in VALID_METHOD_VARIANTS]
+    if invalid_variants:
+        valid_variants = ", ".join(sorted(VALID_METHOD_VARIANTS))
+        raise ConfigValidationError(
+            f"`{field_name}` contains invalid values {invalid_variants}; "
+            f"must be a subset of: {valid_variants}."
+        )
+    return method_variants
+
+
 @dataclass(frozen=True)
 class AnalysisSettings:
     unit: AnalysisUnit = AnalysisUnit.DATASET
     error_column: str = "metric_error"
     selection_error_column: str | None = "metric_error_val"
-    method_variant: str = "tuned"
+    method_variant: tuple[str, ...] = ("tuned",)
     exclude_methods_containing: tuple[str, ...] = ()
     exclude_problem_types: tuple[str, ...] = ()
 
@@ -162,10 +186,7 @@ def _parse_comparisons(raw_comparisons: Any, groups: dict[str, GroupDef]) -> tup
 
 def _parse_analysis(raw_analysis: Any) -> AnalysisSettings:
     mapping = _require_mapping(raw_analysis or {}, "analysis")
-    method_variant = mapping.get("method_variant", "tuned")
-    if method_variant not in VALID_METHOD_VARIANTS:
-        valid_variants = ", ".join(sorted(VALID_METHOD_VARIANTS))
-        raise ConfigValidationError(f"`analysis.method_variant` must be one of: {valid_variants}.")
+    method_variants = normalize_method_variants(mapping.get("method_variant", "tuned"))
     error_column = mapping.get("error_column", "metric_error")
     if not isinstance(error_column, str) or not error_column:
         raise ConfigValidationError("`analysis.error_column` must be a non-empty string.")
@@ -191,7 +212,7 @@ def _parse_analysis(raw_analysis: Any) -> AnalysisSettings:
         unit=_parse_enum(AnalysisUnit, mapping.get("unit", AnalysisUnit.DATASET.value), "analysis.unit"),
         error_column=error_column,
         selection_error_column=selection_error_column,
-        method_variant=method_variant,
+        method_variant=method_variants,
         exclude_methods_containing=exclude_methods,
         exclude_problem_types=exclude_problem_types,
     )

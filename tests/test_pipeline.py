@@ -156,6 +156,54 @@ def test_run_analysis_reuses_metafeature_cache_when_trace_enabled(
     assert metafeature_calls["count"] == 1
 
 
+def test_run_analysis_accepts_string_method_variant_override(
+    analysis_config,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = replace(
+        analysis_config,
+        cache=replace(analysis_config.cache, enabled=False, directory=tmp_path),
+        analysis=replace(analysis_config.analysis, method_variant="default"),
+    )
+    raw_results = pd.DataFrame(
+        {
+            "dataset": ["dataset_a", "dataset_a"],
+            "fold": [0, 0],
+            "method": ["nn_default", "gbdt_default"],
+            "metric_error": [0.20, 0.10],
+            "metric_error_val": [0.21, 0.11],
+            "config_type": ["NN_A", "GBDT_A"],
+            "method_subtype": ["default", "default"],
+        }
+    )
+    metafeatures = pd.DataFrame(
+        {
+            "dataset": ["dataset_a"],
+            "repeat": [0],
+            "fold": [0],
+            "log_n": [2.0],
+            "n_over_d": [10.0],
+            "irregularity": [0.4],
+        }
+    )
+    task_metadata = pd.DataFrame({"dataset": ["dataset_a"], "tid": [1]})
+    context = FakeTabArenaContext(raw_results)
+    monkeypatch.setattr("mfa.pipeline.build_metafeature_table", lambda *args, **kwargs: metafeatures.copy())
+
+    result = run_analysis(
+        config,
+        datasets=["dataset_a"],
+        task_metadata=task_metadata,
+        tabarena_context=context,
+    )
+
+    assert isinstance(result, AnalysisResult)
+    assert context.calls == 1
+    assert result.gap_table["best_a_method"].tolist() == ["nn_default"]
+    assert result.gap_table["best_b_method"].tolist() == ["gbdt_default"]
+
+
 def test_run_analysis_handles_empty_comparisons_without_crashing(
     analysis_config,
     monkeypatch,

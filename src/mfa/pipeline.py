@@ -14,7 +14,7 @@ from .cache import (
     write_dataframe_cache,
     write_json_cache,
 )
-from .config import AnalysisConfig
+from .config import AnalysisConfig, normalize_method_variants
 from .data.loader import load_tabarena_results
 from .gaps.pairwise import compute_pairwise_gaps
 from .groups import validate_groups_against_data
@@ -214,6 +214,7 @@ def run_analysis(
     tabarena_context=None,
 ) -> AnalysisResult:
     """Run the full meta-feature analysis pipeline."""
+    method_variants = normalize_method_variants(config.analysis.method_variant)
     config_hash = compute_config_hash(config.to_dict())
     cache_version_hash = _cache_version_hash(config)
     cache_dir = config.cache.directory
@@ -232,7 +233,7 @@ def run_analysis(
         comparison_names,
         _dataset_scope_label(dataset_list),
         config.analysis.unit.value,
-        config.analysis.method_variant,
+        ",".join(method_variants),
         n_jobs,
     )
 
@@ -241,7 +242,7 @@ def run_analysis(
         cache_version_hash,
         {
             "datasets": dataset_list,
-            "method_variant": config.analysis.method_variant,
+            "method_variant": method_variants,
             "exclude_methods_containing": config.analysis.exclude_methods_containing,
             "error_column": config.analysis.error_column,
             "selection_error_column": config.analysis.selection_error_column,

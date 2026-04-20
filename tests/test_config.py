@@ -51,6 +51,30 @@ def test_parse_config_rejects_unknown_method_variant(config_dict) -> None:
         parse_config(config_dict)
 
 
+def test_parse_config_wraps_string_method_variant_in_tuple(config_dict) -> None:
+    config_dict["analysis"]["method_variant"] = "tuned"
+    config = parse_config(config_dict)
+    assert config.analysis.method_variant == ("tuned",)
+
+
+def test_parse_config_accepts_list_method_variant(config_dict) -> None:
+    config_dict["analysis"]["method_variant"] = ["default", "tuned"]
+    config = parse_config(config_dict)
+    assert config.analysis.method_variant == ("default", "tuned")
+
+
+def test_parse_config_rejects_empty_method_variant_list(config_dict) -> None:
+    config_dict["analysis"]["method_variant"] = []
+    with pytest.raises(ConfigValidationError):
+        parse_config(config_dict)
+
+
+def test_parse_config_rejects_invalid_value_in_method_variant_list(config_dict) -> None:
+    config_dict["analysis"]["method_variant"] = ["tuned", "best"]
+    with pytest.raises(ConfigValidationError):
+        parse_config(config_dict)
+
+
 def test_parse_config_accepts_optional_selection_error_column(config_dict) -> None:
     config_dict["analysis"]["selection_error_column"] = "metric_error_val"
     config = parse_config(config_dict)

@@ -114,3 +114,26 @@ def test_load_tabarena_results_preserves_imputation_metadata_and_nulls_imputed_m
     assert loaded.loc[0, "impute_method"] == "RandomForest_c1_BAG_L1"
     assert loaded.loc[1, "metric_error"] == pytest.approx(0.20)
     assert loaded.loc[1, "metric_error_val"] == pytest.approx(0.21)
+
+
+def test_load_tabarena_results_accepts_string_method_variant_override(analysis_config) -> None:
+    config = replace(
+        analysis_config,
+        analysis=replace(analysis_config.analysis, method_variant="default"),
+    )
+    frame = pd.DataFrame(
+        {
+            "dataset": ["dataset_a", "dataset_a"],
+            "fold": [0, 0],
+            "method": ["nn_default", "nn_tuned"],
+            "config_type": ["NN_A", "NN_A"],
+            "method_subtype": ["default", "tuned"],
+            "metric_error": [0.20, 0.10],
+            "metric_error_val": [0.21, 0.11],
+        }
+    )
+
+    loaded = load_tabarena_results(config, tabarena_context=FakeTabArenaContext(frame))
+
+    assert loaded["method"].tolist() == ["nn_default"]
+    assert loaded["method_subtype"].tolist() == ["default"]

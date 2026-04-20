@@ -1,30 +1,18 @@
 version: 1
 
 groups:
-  baselines:
-    config_types: [KNN, LR, RF, NN_TORCH, FASTAI]
-    label: "baselines"
-  tree:
-    config_types: [CAT, GBM, XGB, EBM, PB, XT, RF]
-    label: "tree-based"
-  nn:
-    config_types: [FASTAI, MNCA_GPU, NN_TORCH, REALMLP_GPU, TABM_GPU]
-    label: "mlp-based"
-  tfm:
+  foundation:
     config_types: [TABDPT_GPU, TABSTAR, TABICLV2, TABICL_GPU, TABPFNV2_GPU, TABPFN-V2.6, REALTABPFN-V2.5]
-    label: "transformer-based"
-  tabpfnv2:
-    config_types: [TABPFNV2_GPU]
-    label: "tabpfnv2"
-  tabpfnv26:
-    config_types: [TABPFN-V2.6]
-    label: "tabpfnv26"
-  
+    label: "foundation"
+  non_foundation:
+    config_types: [KNN, LR, RF, NN_TORCH, FASTAI, CAT, GBM, XGB, EBM, PB, XT, MNCA_GPU, REALMLP_GPU, TABM_GPU]
+    label: "non-foundation"
+
 
 comparisons:
-  - name: tabpfn_old_vs_new
-    group_a: tabpfnv2
-    group_b: tabpfnv26
+  - name: foundation_vs_nonfoundation
+    group_a: foundation
+    group_b: non_foundation
     expected_direction: null
 
 analysis:
@@ -36,10 +24,10 @@ analysis:
   exclude_problem_types: [regression]  # any subset of: regression, binary, multiclass
 
 metafeatures:
-  feature_sets: 
+  feature_sets:
     - basic
     - pymfe
-  pymfe_groups: 
+  pymfe_groups:
     - statistical
     - complexity
     - model-based
@@ -47,11 +35,11 @@ metafeatures:
     - clustering
     - info-theory
     - landmarking
-    - concept 
+    - concept
     - itemset
   pymfe_summary: [mean]
   trace: true
-  pymfe_per_feature_timeout_s: 120  # null or omitted → batch mode (unchanged)                                                                                                                                                                                                 
+  pymfe_per_feature_timeout_s: 120  # null or omitted → batch mode (unchanged)
   irregularity_components:
     - irreg_min_cov_eig
     - irreg_std_skew
