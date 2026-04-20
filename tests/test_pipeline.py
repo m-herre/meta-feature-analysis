@@ -96,6 +96,66 @@ def test_run_analysis_reuses_upstream_caches_across_stats_changes(
     assert result_third.correction_result.alpha == 0.10
 
 
+def test_run_analysis_reuses_metafeature_cache_when_trace_enabled(
+    analysis_config,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = replace(
+        analysis_config,
+        cache=replace(analysis_config.cache, enabled=True, directory=tmp_path),
+        metafeatures=replace(analysis_config.metafeatures, trace=True),
+    )
+    raw_results = pd.DataFrame(
+        {
+            "dataset": ["dataset_a", "dataset_a", "dataset_b", "dataset_b"],
+            "fold": [0, 0, 0, 0],
+            "method": ["nn_alpha", "gbdt_alpha", "nn_alpha", "gbdt_alpha"],
+            "metric_error": [0.20, 0.10, 0.18, 0.12],
+            "metric_error_val": [0.21, 0.11, 0.19, 0.13],
+            "config_type": ["NN_A", "GBDT_A", "NN_A", "GBDT_A"],
+            "method_subtype": ["tuned", "tuned", "tuned", "tuned"],
+        }
+    )
+    metafeatures = pd.DataFrame(
+        {
+            "dataset": ["dataset_a", "dataset_b"],
+            "repeat": [0, 0],
+            "fold": [0, 0],
+            "log_n": [2.0, 2.2],
+            "n_over_d": [10.0, 12.0],
+            "irregularity": [0.4, 0.6],
+        }
+    )
+    task_metadata = pd.DataFrame({"dataset": ["dataset_a", "dataset_b"], "tid": [1, 2]})
+    context = FakeTabArenaContext(raw_results)
+    metafeature_calls = {"count": 0}
+
+    def fake_build_metafeature_table(*args, **kwargs) -> pd.DataFrame:
+        metafeature_calls["count"] += 1
+        return metafeatures.copy()
+
+    monkeypatch.setattr("mfa.pipeline.build_metafeature_table", fake_build_metafeature_table)
+
+    result_first = run_analysis(
+        config,
+        datasets=["dataset_a", "dataset_b"],
+        task_metadata=task_metadata,
+        tabarena_context=context,
+    )
+    result_second = run_analysis(
+        config,
+        datasets=["dataset_a", "dataset_b"],
+        task_metadata=task_metadata,
+        tabarena_context=context,
+    )
+
+    assert isinstance(result_first, AnalysisResult)
+    assert result_second.analysis_table.equals(result_first.analysis_table)
+    assert context.calls == 1
+    assert metafeature_calls["count"] == 1
+
+
 def test_run_analysis_handles_empty_comparisons_without_crashing(
     analysis_config,
     monkeypatch,

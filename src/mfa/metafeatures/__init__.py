@@ -242,7 +242,7 @@ def build_metafeature_table(
     overall_start = time.perf_counter()
     cache_root = Path(cache_dir)
     cache_root.mkdir(parents=True, exist_ok=True)
-    effective_use_cache = use_cache and not trace
+    effective_use_cache = use_cache
     cache_identity = _stable_feature_hash(
         {
             "feature_sets": feature_sets,
@@ -270,7 +270,10 @@ def build_metafeature_table(
         resolved_n_jobs,
     )
     if trace and use_cache:
-        logger.info("Meta-features: trace enabled, bypassing split cache for live timing and warning diagnostics")
+        logger.info(
+            "Meta-features: trace enabled; split cache remains active, "
+            "so live timing and warning diagnostics appear only on cache misses"
+        )
     if trace and resolved_n_jobs > 1:
         logger.info(
             "Meta-features: trace enabled with n_jobs=%d; per-split logs may interleave. "

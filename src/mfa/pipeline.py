@@ -277,12 +277,13 @@ def run_analysis(
             "irregularity_components": config.metafeatures.irregularity_components,
         },
     )
-    metafeature_cache_enabled = (
-        config.cache.enabled and config.cache.stages.metafeatures and not config.metafeatures.trace
-    )
+    metafeature_cache_enabled = config.cache.enabled and config.cache.stages.metafeatures
     metafeature_table = None
     if config.metafeatures.trace and config.cache.enabled and config.cache.stages.metafeatures:
-        logger.info("Stage 2/5 meta-features: trace enabled, bypassing metafeature caches for live diagnostics")
+        logger.info(
+            "Stage 2/5 meta-features: trace enabled; metafeature caches remain active, "
+            "so live per-split diagnostics appear only on cache misses"
+        )
     if metafeature_cache_enabled:
         metafeature_table = read_dataframe_cache(cache_dir, 2, "metafeatures", metafeature_hash)
         if metafeature_table is not None:

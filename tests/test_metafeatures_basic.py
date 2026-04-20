@@ -82,7 +82,7 @@ def test_build_metafeature_table_reuses_split_cache_and_invalidates_on_version(
     pd.testing.assert_frame_equal(third, first)
 
 
-def test_build_metafeature_table_trace_bypasses_split_cache(
+def test_build_metafeature_table_trace_reuses_split_cache(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -111,10 +111,15 @@ def test_build_metafeature_table_trace_bypasses_split_cache(
 
     monkeypatch.setattr("tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id", fake_from_task_id)
 
-    first = build_metafeature_table(metadata, cache_dir=tmp_path, use_cache=True, cache_version=1)
+    first = build_metafeature_table(metadata, cache_dir=tmp_path, use_cache=True, cache_version=1, trace=True)
+    assert call_counter["count"] == 1
+
+    def fail_from_task_id(task_id: int) -> FakeTask:
+        raise AssertionError("Trace mode should still reuse the split cache.")
+
+    monkeypatch.setattr("tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id", fail_from_task_id)
     traced = build_metafeature_table(metadata, cache_dir=tmp_path, use_cache=True, cache_version=1, trace=True)
 
-    assert call_counter["count"] == 2
     pd.testing.assert_frame_equal(traced, first)
 
 
