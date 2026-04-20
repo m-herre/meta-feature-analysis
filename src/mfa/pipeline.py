@@ -277,8 +277,13 @@ def run_analysis(
             "irregularity_components": config.metafeatures.irregularity_components,
         },
     )
+    metafeature_cache_enabled = (
+        config.cache.enabled and config.cache.stages.metafeatures and not config.metafeatures.trace
+    )
     metafeature_table = None
-    if config.cache.enabled and config.cache.stages.metafeatures:
+    if config.metafeatures.trace and config.cache.enabled and config.cache.stages.metafeatures:
+        logger.info("Stage 2/5 meta-features: trace enabled, bypassing metafeature caches for live diagnostics")
+    if metafeature_cache_enabled:
         metafeature_table = read_dataframe_cache(cache_dir, 2, "metafeatures", metafeature_hash)
         if metafeature_table is not None:
             logger.info("Stage 2/5 meta-features: cache hit (%s)", _frame_summary(metafeature_table))
@@ -289,15 +294,16 @@ def run_analysis(
             datasets=None if dataset_list is None else list(dataset_list),
             feature_sets=config.metafeatures.feature_sets,
             cache_dir=cache_dir,
-            use_cache=config.cache.enabled and config.cache.stages.metafeatures,
+            use_cache=metafeature_cache_enabled,
             pymfe_groups=config.metafeatures.pymfe_groups,
             pymfe_summary=config.metafeatures.pymfe_summary,
+            trace=config.metafeatures.trace,
             irregularity_components=config.metafeatures.irregularity_components,
             cache_version=config.version,
             n_jobs=n_jobs,
             backend=backend,
         )
-        if config.cache.enabled and config.cache.stages.metafeatures:
+        if metafeature_cache_enabled:
             write_dataframe_cache(metafeature_table, cache_dir, 2, "metafeatures", metafeature_hash)
         logger.info("Stage 2/5 meta-features: ready (%s)", _frame_summary(metafeature_table))
 

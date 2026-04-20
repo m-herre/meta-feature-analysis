@@ -33,6 +33,7 @@ class MetafeatureSettings:
     feature_sets: tuple[str, ...] = ("basic", "irregularity")
     pymfe_groups: tuple[str, ...] = ("general", "statistical", "info-theory")
     pymfe_summary: tuple[str, ...] = ("mean", "sd")
+    trace: bool = False
     irregularity_components: tuple[str, ...] = (
         "irreg_min_cov_eig",
         "irreg_std_skew",
@@ -196,20 +197,26 @@ def _parse_analysis(raw_analysis: Any) -> AnalysisSettings:
 
 def _parse_metafeatures(raw_metafeatures: Any) -> MetafeatureSettings:
     mapping = _require_mapping(raw_metafeatures or {}, "metafeatures")
+
+    def _sequence_value(key: str, default: list[str]) -> tuple[str, ...]:
+        value = mapping.get(key, default)
+        if value is None:
+            value = default
+        return tuple(value)
+
     return MetafeatureSettings(
-        feature_sets=tuple(mapping.get("feature_sets", ["basic", "irregularity"])),
-        pymfe_groups=tuple(mapping.get("pymfe_groups", ["general", "statistical", "info-theory"])),
-        pymfe_summary=tuple(mapping.get("pymfe_summary", ["mean", "sd"])),
-        irregularity_components=tuple(
-            mapping.get(
-                "irregularity_components",
-                [
-                    "irreg_min_cov_eig",
-                    "irreg_std_skew",
-                    "irreg_range_skew",
-                    "irreg_kurtosis_std",
-                ],
-            )
+        feature_sets=_sequence_value("feature_sets", ["basic", "irregularity"]),
+        pymfe_groups=_sequence_value("pymfe_groups", ["general", "statistical", "info-theory"]),
+        pymfe_summary=_sequence_value("pymfe_summary", ["mean", "sd"]),
+        trace=bool(mapping.get("trace", False)),
+        irregularity_components=_sequence_value(
+            "irregularity_components",
+            [
+                "irreg_min_cov_eig",
+                "irreg_std_skew",
+                "irreg_range_skew",
+                "irreg_kurtosis_std",
+            ],
         ),
     )
 

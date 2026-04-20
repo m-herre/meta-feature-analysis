@@ -204,12 +204,14 @@ One or more pairwise comparisons between groups. `delta_norm = group_a_error - g
 | `feature_sets` | list of strings | `basic`, `irregularity`, `pymfe` | `[basic, irregularity]` |
 | `pymfe_groups` | list of strings | pymfe feature groups (e.g. `general`, `statistical`, `info-theory`) | `[general, statistical, info-theory]` |
 | `pymfe_summary` | list of strings | pymfe summary functions (e.g. `mean`, `sd`, `min`, `max`) | `[mean, sd]` |
+| `trace` | bool | `true`, `false` | `false` |
 | `irregularity_components` | list of strings | See below | all four |
 
 Available feature sets:
 - `basic` — produces: `n`, `d`, `log_n`, `n_over_d`, `cat_fraction`, `missing_fraction`
 - `irregularity` — covariance eigenvalue-based composite score on numeric columns; produces individual components plus a combined `irregularity` column
 - `pymfe` — requires `pip install -e ".[pymfe]"`; extracts features via the pymfe library
+- `trace: true` — bypasses metafeature caches and logs per-split feature-set timings, exact `pymfe` subgroup contents, per-output `pymfe` timings, and captured warning causes. For readable ordering, use `parallelism.n_jobs: 1`.
 
 Categorical handling note:
 - Columns with dtype `object`, pandas `category`, or `bool` are treated as categorical.

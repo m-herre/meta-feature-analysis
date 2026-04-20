@@ -19,6 +19,10 @@ from .registry import extract_requested_metafeatures
 logger = get_logger(__name__)
 
 
+def _split_trace_label(dataset: str, repeat: int, fold: int) -> str:
+    return f"{dataset} r{repeat} f{fold}"
+
+
 def _format_elapsed(seconds: float) -> str:
     total_seconds = max(0, int(round(seconds)))
     hours, remainder = divmod(total_seconds, 3600)
@@ -110,6 +114,7 @@ def extract_split_metafeatures(
     feature_sets: tuple[str, ...] = ("basic", "irregularity"),
     pymfe_groups: tuple[str, ...] = ("general", "statistical", "info-theory"),
     pymfe_summary: tuple[str, ...] = ("mean", "sd"),
+    trace: bool = False,
 ) -> tuple[dict[str, float], dict[str, str]]:
     """Compute all configured meta-features for one train split.
 
@@ -128,6 +133,8 @@ def extract_split_metafeatures(
         feature_sets=feature_sets,
         pymfe_groups=pymfe_groups,
         pymfe_summary=pymfe_summary,
+        trace=trace,
+        trace_label=_split_trace_label(dataset, repeat, fold),
     )
     features.update(computed)
     return features, failed_sets
@@ -172,6 +179,7 @@ def _process_one_split(
     cache_root: str,
     cache_identity: str,
     use_cache: bool,
+    trace: bool,
 ) -> tuple[str, int, int, dict[str, float] | None, bool, bool, str | None, dict[str, str]]:
     """Handle one (dataset, repeat, fold).
 
@@ -196,6 +204,7 @@ def _process_one_split(
             feature_sets=feature_sets,
             pymfe_groups=pymfe_groups,
             pymfe_summary=pymfe_summary,
+            trace=trace,
         )
         if use_cache:
             split_path.parent.mkdir(parents=True, exist_ok=True)
@@ -223,6 +232,7 @@ def build_metafeature_table(
     use_cache: bool = True,
     pymfe_groups: tuple[str, ...] = ("general", "statistical", "info-theory"),
     pymfe_summary: tuple[str, ...] = ("mean", "sd"),
+    trace: bool = False,
     irregularity_components: tuple[str, ...] = DEFAULT_IRREGULARITY_COMPONENTS,
     cache_version: int | None = None,
     n_jobs: int = 1,
@@ -232,6 +242,7 @@ def build_metafeature_table(
     overall_start = time.perf_counter()
     cache_root = Path(cache_dir)
     cache_root.mkdir(parents=True, exist_ok=True)
+    effective_use_cache = use_cache and not trace
     cache_identity = _stable_feature_hash(
         {
             "feature_sets": feature_sets,
@@ -258,6 +269,14 @@ def build_metafeature_table(
         ",".join(feature_sets),
         resolved_n_jobs,
     )
+    if trace and use_cache:
+        logger.info("Meta-features: trace enabled, bypassing split cache for live timing and warning diagnostics")
+    if trace and resolved_n_jobs > 1:
+        logger.info(
+            "Meta-features: trace enabled with n_jobs=%d; per-split logs may interleave. "
+            "Use n_jobs=1 for ordered traces.",
+            resolved_n_jobs,
+        )
 
     # Pre-extract dataset info for both sequential and parallel paths
     dataset_tasks: list[tuple[str, int, int | None, int | None]] = []
@@ -278,8 +297,9 @@ def build_metafeature_table(
             pymfe_summary=pymfe_summary,
             cache_root=cache_root,
             cache_identity=cache_identity,
-            use_cache=use_cache,
+            use_cache=effective_use_cache,
             overall_start=overall_start,
+            trace=trace,
         )
     else:
         rows, total_cached_splits, total_computed_splits, failed_feature_sets = _build_parallel(
@@ -289,10 +309,11 @@ def build_metafeature_table(
             pymfe_summary=pymfe_summary,
             cache_root=cache_root,
             cache_identity=cache_identity,
-            use_cache=use_cache,
+            use_cache=effective_use_cache,
             overall_start=overall_start,
             n_jobs=resolved_n_jobs,
             backend=backend,
+            trace=trace,
         )
 
     metafeature_table = pd.DataFrame(rows)
@@ -355,6 +376,7 @@ def _build_sequential(
     cache_identity: str,
     use_cache: bool,
     overall_start: float,
+    trace: bool,
 ) -> tuple[list[dict[str, float]], int, int, dict[str, dict[tuple[str, int, int], str]]]:
     """Sequential per-dataset processing (original behavior)."""
     rows: list[dict[str, float]] = []
@@ -411,6 +433,7 @@ def _build_sequential(
                     feature_sets=feature_sets,
                     pymfe_groups=pymfe_groups,
                     pymfe_summary=pymfe_summary,
+                    trace=trace,
                 )
                 for set_name, err in split_failed_sets.items():
                     failed_feature_sets.setdefault(set_name, {})[(dataset, repeat, fold)] = err
@@ -463,6 +486,7 @@ def _build_parallel(
     overall_start: float,
     n_jobs: int,
     backend: str,
+    trace: bool,
 ) -> tuple[list[dict[str, float]], int, int, dict[str, dict[tuple[str, int, int], str]]]:
     """Parallel per-split processing: one future per (dataset, repeat, fold).
 
@@ -575,6 +599,7 @@ def _build_parallel(
                         cache_root_str,
                         cache_identity,
                         use_cache,
+                        trace,
                     )
                     for dataset, task_id, repeat, fold in pending
                 ]
@@ -621,6 +646,7 @@ def _build_parallel(
                             cache_root_str,
                             cache_identity,
                             use_cache,
+                            trace,
                         )
                     )
                 pending = []

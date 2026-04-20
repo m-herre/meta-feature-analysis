@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -9,7 +10,7 @@ import pandas as pd
 import pytest
 
 from mfa.metafeatures import build_metafeature_table
-from mfa.metafeatures.pymfe_features import extract_pymfe_features
+from mfa.metafeatures.pymfe_features import _log_warning_messages, extract_pymfe_features
 from mfa.metafeatures.registry import extract_requested_metafeatures
 
 
@@ -53,6 +54,137 @@ def test_extract_pymfe_features_imputes_numeric_missing_values_with_median(monke
     assert captured["groups"] == ["general"]
     assert captured["summary"] == ["mean"]
     assert features == {"pymfe__dummy": 1.0}
+
+
+def test_extract_pymfe_features_trace_logs_group_contents_and_output_times(monkeypatch) -> None:
+    info_messages: list[str] = []
+
+    class FakeMFE:
+        def __init__(self, *, groups, summary, measure_time=None) -> None:
+            self.groups = groups
+            self.summary = summary
+            self.measure_time = measure_time
+
+        @classmethod
+        def valid_metafeatures(cls, groups=None):
+            group = groups[0]
+            if group == "general":
+                return ("attr_to_inst", "nr_attr")
+            return ("cor",)
+
+        def fit(self, X, y, cat_cols) -> None:
+            return None
+
+        def extract(self, out_type=dict):
+            assert out_type is dict
+            if self.groups == ["general"]:
+                return {
+                    "mtf_names": ["attr_to_inst", "nr_attr"],
+                    "mtf_vals": [0.5, 2.0],
+                    "mtf_time": [0.125, 0.25],
+                }
+            return {
+                "mtf_names": ["cor.mean"],
+                "mtf_vals": [1.5],
+                "mtf_time": [0.375],
+            }
+
+    pymfe_module = types.ModuleType("pymfe")
+    pymfe_module.__path__ = []
+    mfe_module = types.ModuleType("pymfe.mfe")
+    mfe_module.MFE = FakeMFE
+    pymfe_module.mfe = mfe_module
+    monkeypatch.setitem(sys.modules, "pymfe", pymfe_module)
+    monkeypatch.setitem(sys.modules, "pymfe.mfe", mfe_module)
+    monkeypatch.setattr(
+        "mfa.metafeatures.pymfe_features.logger.info",
+        lambda message, *args: info_messages.append(message % args if args else message),
+    )
+
+    features = extract_pymfe_features(
+        pd.DataFrame({"num": [1.0, 2.0, 3.0]}),
+        pd.Series([0, 1, 0]),
+        groups=("general", "statistical"),
+        summary=("mean",),
+        trace=True,
+        trace_label="dataset_a r0 f0",
+    )
+
+    assert features == {
+        "pymfe__attr_to_inst": 0.5,
+        "pymfe__nr_attr": 2.0,
+        "pymfe__cor.mean": 1.5,
+    }
+    assert any(
+        "dataset_a r0 f0: pymfe group `general`: calculating 2 raw feature(s)" in message
+        for message in info_messages
+    )
+    assert any("attr_to_inst, nr_attr" in message for message in info_messages)
+    assert any(
+        "dataset_a r0 f0: pymfe group `general`: computed `attr_to_inst` in 0.125000s" in message
+        for message in info_messages
+    )
+    assert any(
+        "dataset_a r0 f0: pymfe group `statistical`: computed `cor.mean` in 0.375000s" in message
+        for message in info_messages
+    )
+
+
+def test_extract_pymfe_features_logs_captured_warning_messages(monkeypatch) -> None:
+    warning_messages: list[str] = []
+    monkeypatch.setattr(
+        "mfa.metafeatures.pymfe_features.logger.warning",
+        lambda message, *args: warning_messages.append(message % args if args else message),
+    )
+
+    _log_warning_messages(
+        ("RuntimeWarning from fake_warning.py:7: precision loss",),
+        trace_label="dataset_a r0 f0",
+        group="general",
+        phase="fit",
+    )
+
+    assert any("dataset_a r0 f0: pymfe group `general` warning during fit" in message for message in warning_messages)
+    assert any("RuntimeWarning" in message and "precision loss" in message for message in warning_messages)
+
+
+def test_extract_pymfe_features_non_trace_does_not_log_warning_causes(monkeypatch) -> None:
+    logger_warning_messages: list[str] = []
+
+    class WarningMFE:
+        def __init__(self, *, groups, summary) -> None:
+            pass
+
+        def fit(self, X, y, cat_cols) -> None:
+            warnings.warn("precision loss", RuntimeWarning, stacklevel=1)
+
+        def extract(self):
+            return ["dummy"], [1.0]
+
+    pymfe_module = types.ModuleType("pymfe")
+    pymfe_module.__path__ = []
+    mfe_module = types.ModuleType("pymfe.mfe")
+    mfe_module.MFE = WarningMFE
+    pymfe_module.mfe = mfe_module
+    monkeypatch.setitem(sys.modules, "pymfe", pymfe_module)
+    monkeypatch.setitem(sys.modules, "pymfe.mfe", mfe_module)
+    monkeypatch.setattr(
+        "mfa.metafeatures.pymfe_features.logger.warning",
+        lambda message, *args: logger_warning_messages.append(message % args if args else message),
+    )
+
+    with pytest.warns(RuntimeWarning, match="precision loss"):
+        features = extract_pymfe_features(
+            pd.DataFrame({"num": [1.0, 2.0, 3.0]}),
+            pd.Series([0, 1, 0]),
+            groups=("general",),
+            summary=("mean",),
+            trace=False,
+            trace_label="dataset_a r0 f0",
+        )
+
+    assert features == {"pymfe__dummy": 1.0}
+    assert logger_warning_messages == []
 
 
 def test_extract_requested_metafeatures_isolates_pymfe_failure(monkeypatch) -> None:

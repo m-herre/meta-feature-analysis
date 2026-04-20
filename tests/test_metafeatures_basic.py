@@ -82,6 +82,42 @@ def test_build_metafeature_table_reuses_split_cache_and_invalidates_on_version(
     pd.testing.assert_frame_equal(third, first)
 
 
+def test_build_metafeature_table_trace_bypasses_split_cache(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    metadata = pd.DataFrame(
+        {
+            "dataset": ["dataset_a"],
+            "tid": [1],
+            "n_repeats": [1],
+            "n_folds": [1],
+        }
+    )
+    call_counter = {"count": 0}
+
+    class FakeTask:
+        def get_split_dimensions(self) -> tuple[int, int, int]:
+            return 1, 1, 1
+
+        def get_train_test_split(self, *, fold: int, repeat: int):
+            X = pd.DataFrame({"num": [1.0, 2.0, 3.0]})
+            y = pd.Series([0, 1, 0])
+            return X, y, X, y
+
+    def fake_from_task_id(task_id: int) -> FakeTask:
+        call_counter["count"] += 1
+        return FakeTask()
+
+    monkeypatch.setattr("tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id", fake_from_task_id)
+
+    first = build_metafeature_table(metadata, cache_dir=tmp_path, use_cache=True, cache_version=1)
+    traced = build_metafeature_table(metadata, cache_dir=tmp_path, use_cache=True, cache_version=1, trace=True)
+
+    assert call_counter["count"] == 2
+    pd.testing.assert_frame_equal(traced, first)
+
+
 def test_build_metafeature_table_logs_dataset_progress(
     monkeypatch,
     tmp_path: Path,

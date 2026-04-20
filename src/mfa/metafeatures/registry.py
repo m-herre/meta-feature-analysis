@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import time
+
+from .._logging import get_logger
 from .basic import compute_basic_metafeatures, get_categorical_columns
 from .irregularity import compute_irregularity_components
 from .pymfe_features import extract_pymfe_features
 
 VALID_FEATURE_SETS = {"basic", "irregularity", "pymfe"}
+logger = get_logger(__name__)
+
+
+def _trace_prefix(trace_label: str | None) -> str:
+    if trace_label:
+        return f"Meta-features {trace_label}"
+    return "Meta-features"
 
 
 def validate_feature_sets(feature_sets: tuple[str, ...]) -> None:
@@ -20,6 +30,8 @@ def extract_requested_metafeatures(
     feature_sets: tuple[str, ...],
     pymfe_groups: tuple[str, ...],
     pymfe_summary: tuple[str, ...],
+    trace: bool = False,
+    trace_label: str | None = None,
 ) -> tuple[dict[str, float], dict[str, str]]:
     """Extract all configured feature sets for one training split.
 
@@ -32,26 +44,63 @@ def extract_requested_metafeatures(
     validate_feature_sets(feature_sets)
     features: dict[str, float] = {}
     failed_sets: dict[str, str] = {}
+    trace_prefix = _trace_prefix(trace_label)
 
     if "basic" in feature_sets:
-        features.update(compute_basic_metafeatures(X_train))
+        basic_start = time.perf_counter() if trace else None
+        basic_features = compute_basic_metafeatures(X_train)
+        features.update(basic_features)
+        if trace:
+            logger.info(
+                "%s: feature set `basic`: calculated %d feature(s) in %.3fs (%s)",
+                trace_prefix,
+                len(basic_features),
+                time.perf_counter() - basic_start,
+                ", ".join(sorted(basic_features)),
+            )
 
     if "irregularity" in feature_sets:
+        irregularity_start = time.perf_counter() if trace else None
         categorical_columns = get_categorical_columns(X_train)
         X_num = X_train.drop(columns=categorical_columns, errors="ignore")
-        features.update(compute_irregularity_components(X_num))
+        irregularity_features = compute_irregularity_components(X_num)
+        features.update(irregularity_features)
+        if trace:
+            logger.info(
+                "%s: feature set `irregularity`: calculated %d feature(s) in %.3fs (%s)",
+                trace_prefix,
+                len(irregularity_features),
+                time.perf_counter() - irregularity_start,
+                ", ".join(sorted(irregularity_features)),
+            )
 
     if "pymfe" in feature_sets:
+        pymfe_start = time.perf_counter() if trace else None
         try:
-            features.update(
-                extract_pymfe_features(
-                    X_train,
-                    y_train,
-                    groups=pymfe_groups,
-                    summary=pymfe_summary,
-                )
+            pymfe_features = extract_pymfe_features(
+                X_train,
+                y_train,
+                groups=pymfe_groups,
+                summary=pymfe_summary,
+                trace=trace,
+                trace_label=trace_label,
             )
+            features.update(pymfe_features)
+            if trace:
+                logger.info(
+                    "%s: feature set `pymfe`: calculated %d output(s) in %.3fs",
+                    trace_prefix,
+                    len(pymfe_features),
+                    time.perf_counter() - pymfe_start,
+                )
         except Exception as exc:
             failed_sets["pymfe"] = f"{type(exc).__name__}: {exc}"
+            if trace:
+                logger.warning(
+                    "%s: feature set `pymfe` failed after %.3fs — %s",
+                    trace_prefix,
+                    time.perf_counter() - pymfe_start,
+                    failed_sets["pymfe"],
+                )
 
     return features, failed_sets

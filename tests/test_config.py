@@ -107,6 +107,29 @@ def test_parse_config_defaults_exclude_problem_types_empty(config_dict) -> None:
     assert config.analysis.exclude_problem_types == ()
 
 
+def test_parse_config_parses_metafeature_trace(config_dict) -> None:
+    config_dict["metafeatures"]["trace"] = True
+    config = parse_config(config_dict)
+    assert config.metafeatures.trace is True
+
+
+def test_parse_config_treats_null_metafeature_sequences_as_defaults(config_dict) -> None:
+    config_dict["metafeatures"]["pymfe_groups"] = None
+    config_dict["metafeatures"]["pymfe_summary"] = None
+    config_dict["metafeatures"]["irregularity_components"] = None
+
+    config = parse_config(config_dict)
+
+    assert config.metafeatures.pymfe_groups == ("general", "statistical", "info-theory")
+    assert config.metafeatures.pymfe_summary == ("mean", "sd")
+    assert config.metafeatures.irregularity_components == (
+        "irreg_min_cov_eig",
+        "irreg_std_skew",
+        "irreg_range_skew",
+        "irreg_kurtosis_std",
+    )
+
+
 def test_config_hash_is_deterministic(analysis_config) -> None:
     left = compute_config_hash(analysis_config.to_dict())
     right = compute_config_hash(load_config(Path("configs/default.yaml")).to_dict())
