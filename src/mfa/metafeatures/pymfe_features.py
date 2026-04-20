@@ -81,21 +81,27 @@ def _compute_feature_worker(
     feature: str,
     summary: tuple[str, ...],
 ) -> None:
-    """Subprocess target: fit+extract a single pymfe feature, push result to `queue`."""
+    """Subprocess target: fit+extract a single pymfe feature, push result to `queue`.
+
+    Payload shape: ``(status, data, warning_messages)`` where ``warning_messages``
+    is a tuple of formatted strings captured during fit+extract so the parent
+    process can log them with full provenance (mirrors batch-path behavior).
+    """
     try:
         from pymfe.mfe import MFE
     except ImportError as err:
-        queue.put(("err", f"ImportError: {err}"))
+        queue.put(("err", f"ImportError: {err}", ()))
         return
     try:
         mfe = MFE(groups=[group], features=[feature], summary=list(summary))
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always")
             mfe.fit(X_np, y_np, cat_cols=cat_indices)
             names, values = mfe.extract()
-        queue.put(("ok", dict(zip(names, values, strict=False))))
+        warning_messages = _format_warning_messages(list(captured))
+        queue.put(("ok", dict(zip(names, values, strict=False)), warning_messages))
     except Exception as exc:
-        queue.put(("err", f"{type(exc).__name__}: {exc}"))
+        queue.put(("err", f"{type(exc).__name__}: {exc}", ()))
 
 
 def _extract_per_feature_with_timeout(
@@ -177,7 +183,7 @@ def _extract_per_feature_with_timeout(
                 continue
 
             try:
-                status, payload = queue.get(timeout=PROCESS_TERMINATE_GRACE_S)
+                message = queue.get(timeout=PROCESS_TERMINATE_GRACE_S)
             except Exception as exc:
                 skipped.append(f"{group}.{feature}")
                 logger.warning(
@@ -188,6 +194,14 @@ def _extract_per_feature_with_timeout(
                     exc,
                 )
                 continue
+
+            status, payload, warning_messages = message
+            _log_warning_messages(
+                warning_messages,
+                trace_label=trace_label,
+                group=group,
+                phase="fit+extract",
+            )
 
             if status == "ok":
                 results.update(_normalize_pymfe_outputs(list(payload.keys()), list(payload.values())))

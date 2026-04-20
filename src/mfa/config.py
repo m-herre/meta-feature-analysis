@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -209,15 +210,19 @@ def _parse_metafeatures(raw_metafeatures: Any) -> MetafeatureSettings:
     if raw_timeout is None:
         pymfe_per_feature_timeout_s: float | None = None
     else:
+        if isinstance(raw_timeout, bool):
+            raise ConfigValidationError(
+                "`metafeatures.pymfe_per_feature_timeout_s` must be null or a positive finite number."
+            )
         try:
             pymfe_per_feature_timeout_s = float(raw_timeout)
         except (TypeError, ValueError) as err:
             raise ConfigValidationError(
-                "`metafeatures.pymfe_per_feature_timeout_s` must be null or a positive number."
+                "`metafeatures.pymfe_per_feature_timeout_s` must be null or a positive finite number."
             ) from err
-        if pymfe_per_feature_timeout_s <= 0:
+        if not math.isfinite(pymfe_per_feature_timeout_s) or pymfe_per_feature_timeout_s <= 0:
             raise ConfigValidationError(
-                "`metafeatures.pymfe_per_feature_timeout_s` must be null or a positive number."
+                "`metafeatures.pymfe_per_feature_timeout_s` must be null or a positive finite number."
             )
 
     return MetafeatureSettings(
