@@ -274,6 +274,7 @@ def run_analysis(
             "feature_sets": config.metafeatures.feature_sets,
             "pymfe_groups": config.metafeatures.pymfe_groups,
             "pymfe_summary": config.metafeatures.pymfe_summary,
+            "pymfe_per_feature_timeout_s": config.metafeatures.pymfe_per_feature_timeout_s,
             "irregularity_components": config.metafeatures.irregularity_components,
         },
     )
@@ -298,6 +299,7 @@ def run_analysis(
             use_cache=metafeature_cache_enabled,
             pymfe_groups=config.metafeatures.pymfe_groups,
             pymfe_summary=config.metafeatures.pymfe_summary,
+            pymfe_per_feature_timeout_s=config.metafeatures.pymfe_per_feature_timeout_s,
             trace=config.metafeatures.trace,
             irregularity_components=config.metafeatures.irregularity_components,
             cache_version=config.version,

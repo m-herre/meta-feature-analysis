@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import multiprocessing as mp
 import time
 import warnings
 from pathlib import Path
@@ -11,6 +12,8 @@ from .._logging import get_logger
 from .basic import get_categorical_columns
 
 logger = get_logger(__name__)
+
+PROCESS_TERMINATE_GRACE_S = 5
 
 
 def _trace_prefix(trace_label: str | None) -> str:
@@ -69,16 +72,179 @@ def _normalize_pymfe_outputs(names, values) -> dict[str, float]:
     }
 
 
+def _compute_feature_worker(
+    queue,
+    X_np,
+    y_np,
+    cat_indices,
+    group: str,
+    feature: str,
+    summary: tuple[str, ...],
+) -> None:
+    """Subprocess target: fit+extract a single pymfe feature, push result to `queue`."""
+    try:
+        from pymfe.mfe import MFE
+    except ImportError as err:
+        queue.put(("err", f"ImportError: {err}"))
+        return
+    try:
+        mfe = MFE(groups=[group], features=[feature], summary=list(summary))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            mfe.fit(X_np, y_np, cat_cols=cat_indices)
+            names, values = mfe.extract()
+        queue.put(("ok", dict(zip(names, values, strict=False))))
+    except Exception as exc:
+        queue.put(("err", f"{type(exc).__name__}: {exc}"))
+
+
+def _extract_per_feature_with_timeout(
+    X_encoded: pd.DataFrame,
+    y_encoded,
+    categorical_indices: list[int],
+    groups: tuple[str, ...],
+    summary: tuple[str, ...],
+    timeout_s: float,
+    trace: bool,
+    trace_label: str | None,
+) -> dict[str, float]:
+    """Extract pymfe features one at a time in isolated subprocesses.
+
+    Each feature runs in a fresh subprocess; if it exceeds `timeout_s` the
+    process is terminated and the feature skipped. Non-zero exit or in-worker
+    exceptions are also caught and the feature is skipped (not dropped from
+    the result dict as NaN — absent keys become NaN at DataFrame construction).
+    """
+    try:
+        from pymfe.mfe import MFE
+    except ImportError as err:
+        raise ImportError("`pymfe` is not installed. Install `meta-feature-analysis[pymfe]` to enable it.") from err
+
+    trace_prefix = _trace_prefix(trace_label)
+    X_np = X_encoded.to_numpy()
+    results: dict[str, float] = {}
+    skipped: list[str] = []
+    ctx = mp.get_context()
+
+    for group in groups:
+        raw_features = tuple(MFE.valid_metafeatures(groups=(group,)))
+        if trace:
+            logger.info(
+                "%s: pymfe group `%s`: computing %d feature(s) with per-feature timeout %.0fs",
+                trace_prefix,
+                group,
+                len(raw_features),
+                timeout_s,
+            )
+        for feature in raw_features:
+            feature_start = time.perf_counter() if trace else None
+            queue = ctx.Queue()
+            proc = ctx.Process(
+                target=_compute_feature_worker,
+                args=(queue, X_np, y_encoded, categorical_indices, group, feature, summary),
+                daemon=True,
+            )
+            proc.start()
+            proc.join(timeout=timeout_s)
+
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(timeout=PROCESS_TERMINATE_GRACE_S)
+                if proc.is_alive():
+                    proc.kill()
+                    proc.join()
+                skipped.append(f"{group}.{feature}")
+                logger.warning(
+                    "%s: pymfe feature `%s.%s` exceeded %.0fs timeout, skipping",
+                    trace_prefix,
+                    group,
+                    feature,
+                    timeout_s,
+                )
+                _drain_queue(queue)
+                continue
+
+            if proc.exitcode != 0:
+                skipped.append(f"{group}.{feature}")
+                logger.warning(
+                    "%s: pymfe feature `%s.%s` crashed (exit code %s), skipping",
+                    trace_prefix,
+                    group,
+                    feature,
+                    proc.exitcode,
+                )
+                _drain_queue(queue)
+                continue
+
+            try:
+                status, payload = queue.get(timeout=PROCESS_TERMINATE_GRACE_S)
+            except Exception as exc:
+                skipped.append(f"{group}.{feature}")
+                logger.warning(
+                    "%s: pymfe feature `%s.%s` produced no result (%s), skipping",
+                    trace_prefix,
+                    group,
+                    feature,
+                    exc,
+                )
+                continue
+
+            if status == "ok":
+                results.update(_normalize_pymfe_outputs(list(payload.keys()), list(payload.values())))
+                if trace:
+                    logger.info(
+                        "%s: pymfe group `%s`: computed `%s` in %.6fs",
+                        trace_prefix,
+                        group,
+                        feature,
+                        time.perf_counter() - feature_start,
+                    )
+            else:
+                skipped.append(f"{group}.{feature}")
+                logger.warning(
+                    "%s: pymfe feature `%s.%s` failed: %s, skipping",
+                    trace_prefix,
+                    group,
+                    feature,
+                    payload,
+                )
+
+    if skipped:
+        logger.warning(
+            "%s: skipped %d pymfe feature(s) due to timeout or crash: %s",
+            trace_prefix,
+            len(skipped),
+            ", ".join(skipped),
+        )
+    return results
+
+
+def _drain_queue(queue) -> None:
+    """Best-effort drain of a multiprocessing queue after the producer is gone."""
+    try:
+        while not queue.empty():
+            queue.get_nowait()
+    except Exception:
+        pass
+
+
 def extract_pymfe_features(
     X_train: pd.DataFrame,
     y_train: pd.Series | None,
     *,
     groups: tuple[str, ...],
     summary: tuple[str, ...],
+    per_feature_timeout_s: float | None = None,
     trace: bool = False,
     trace_label: str | None = None,
 ) -> dict[str, float]:
-    """Extract optional pymfe meta-features."""
+    """Extract optional pymfe meta-features.
+
+    When `per_feature_timeout_s` is set, each feature is computed in an
+    isolated subprocess and skipped if it exceeds the timeout or crashes the
+    worker. Otherwise the full set of groups is extracted in one fit/extract
+    batch (the default, efficient path).
+    """
     try:
         from pymfe.mfe import MFE
     except ImportError as err:
@@ -90,6 +256,18 @@ def extract_pymfe_features(
     trace_prefix = _trace_prefix(trace_label)
     X_encoded, categorical_indices = _prepare_pymfe_input(X_train)
     y_encoded = None if y_train is None else y_train.to_numpy()
+
+    if per_feature_timeout_s is not None:
+        return _extract_per_feature_with_timeout(
+            X_encoded,
+            y_encoded,
+            categorical_indices,
+            groups,
+            summary,
+            per_feature_timeout_s,
+            trace,
+            trace_label,
+        )
 
     if not trace:
         mfe = MFE(groups=list(groups), summary=list(summary))

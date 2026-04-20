@@ -43,6 +43,7 @@ metafeatures:
   pymfe_groups: [general, statistical, info-theory]
   pymfe_summary: [mean, sd]
   trace: false  # set true to log per-split feature timings, pymfe subgroup contents, and warning causes
+  pymfe_per_feature_timeout_s: 120  # null or omitted → batch mode (unchanged)                                                                                                                                                                                                 
   irregularity_components:
     - irreg_min_cov_eig
     - irreg_std_skew

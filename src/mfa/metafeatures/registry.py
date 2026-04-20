@@ -30,6 +30,7 @@ def extract_requested_metafeatures(
     feature_sets: tuple[str, ...],
     pymfe_groups: tuple[str, ...],
     pymfe_summary: tuple[str, ...],
+    pymfe_per_feature_timeout_s: float | None = None,
     trace: bool = False,
     trace_label: str | None = None,
 ) -> tuple[dict[str, float], dict[str, str]]:
@@ -82,6 +83,7 @@ def extract_requested_metafeatures(
                 y_train,
                 groups=pymfe_groups,
                 summary=pymfe_summary,
+                per_feature_timeout_s=pymfe_per_feature_timeout_s,
                 trace=trace,
                 trace_label=trace_label,
             )

@@ -130,6 +130,112 @@ def test_extract_pymfe_features_trace_logs_group_contents_and_output_times(monke
     )
 
 
+def test_extract_pymfe_features_per_feature_timeout_skips_hanging_feature(monkeypatch) -> None:
+    import multiprocessing as mp
+
+    if mp.get_start_method(allow_none=True) not in (None, "fork"):
+        pytest.skip("per-feature subprocess timeout test relies on fork() inheritance of monkeypatches")
+
+    warning_messages: list[str] = []
+    monkeypatch.setattr(
+        "mfa.metafeatures.pymfe_features.logger.warning",
+        lambda message, *args: warning_messages.append(message % args if args else message),
+    )
+
+    class FakeMFE:
+        def __init__(self, *, groups, features=None, summary) -> None:
+            self.groups = groups
+            self.features = list(features) if features is not None else None
+            self.summary = summary
+
+        @classmethod
+        def valid_metafeatures(cls, groups=None):
+            return ("fast_feature", "slow_feature")
+
+        def fit(self, X, y, cat_cols) -> None:
+            import time
+
+            if self.features == ["slow_feature"]:
+                time.sleep(5)
+
+        def extract(self):
+            assert self.features is not None
+            name = self.features[0]
+            return [name], [42.0]
+
+    pymfe_module = types.ModuleType("pymfe")
+    pymfe_module.__path__ = []
+    mfe_module = types.ModuleType("pymfe.mfe")
+    mfe_module.MFE = FakeMFE
+    pymfe_module.mfe = mfe_module
+    monkeypatch.setitem(sys.modules, "pymfe", pymfe_module)
+    monkeypatch.setitem(sys.modules, "pymfe.mfe", mfe_module)
+
+    features = extract_pymfe_features(
+        pd.DataFrame({"x": [1.0, 2.0, 3.0, 4.0]}),
+        pd.Series([0, 1, 0, 1]),
+        groups=("general",),
+        summary=("mean",),
+        per_feature_timeout_s=0.5,
+    )
+
+    assert features == {"pymfe__fast_feature": 42.0}
+    assert any("slow_feature" in message and "timeout" in message for message in warning_messages)
+
+
+def test_extract_pymfe_features_per_feature_skips_crashing_feature(monkeypatch) -> None:
+    import multiprocessing as mp
+
+    if mp.get_start_method(allow_none=True) not in (None, "fork"):
+        pytest.skip("per-feature subprocess crash test relies on fork() inheritance of monkeypatches")
+
+    warning_messages: list[str] = []
+    monkeypatch.setattr(
+        "mfa.metafeatures.pymfe_features.logger.warning",
+        lambda message, *args: warning_messages.append(message % args if args else message),
+    )
+
+    class FakeMFE:
+        def __init__(self, *, groups, features=None, summary) -> None:
+            self.groups = groups
+            self.features = list(features) if features is not None else None
+            self.summary = summary
+
+        @classmethod
+        def valid_metafeatures(cls, groups=None):
+            return ("good_feature", "crashy_feature")
+
+        def fit(self, X, y, cat_cols) -> None:
+            import os
+
+            if self.features == ["crashy_feature"]:
+                os._exit(137)
+
+        def extract(self):
+            assert self.features is not None
+            name = self.features[0]
+            return [name], [7.0]
+
+    pymfe_module = types.ModuleType("pymfe")
+    pymfe_module.__path__ = []
+    mfe_module = types.ModuleType("pymfe.mfe")
+    mfe_module.MFE = FakeMFE
+    pymfe_module.mfe = mfe_module
+    monkeypatch.setitem(sys.modules, "pymfe", pymfe_module)
+    monkeypatch.setitem(sys.modules, "pymfe.mfe", mfe_module)
+
+    features = extract_pymfe_features(
+        pd.DataFrame({"x": [1.0, 2.0, 3.0, 4.0]}),
+        pd.Series([0, 1, 0, 1]),
+        groups=("general",),
+        summary=("mean",),
+        per_feature_timeout_s=5.0,
+    )
+
+    assert features == {"pymfe__good_feature": 7.0}
+    assert any("crashy_feature" in message and "crashed" in message for message in warning_messages)
+
+
 def test_extract_pymfe_features_logs_captured_warning_messages(monkeypatch) -> None:
     warning_messages: list[str] = []
     monkeypatch.setattr(

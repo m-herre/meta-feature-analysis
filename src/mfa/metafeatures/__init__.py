@@ -114,6 +114,7 @@ def extract_split_metafeatures(
     feature_sets: tuple[str, ...] = ("basic", "irregularity"),
     pymfe_groups: tuple[str, ...] = ("general", "statistical", "info-theory"),
     pymfe_summary: tuple[str, ...] = ("mean", "sd"),
+    pymfe_per_feature_timeout_s: float | None = None,
     trace: bool = False,
 ) -> tuple[dict[str, float], dict[str, str]]:
     """Compute all configured meta-features for one train split.
@@ -133,6 +134,7 @@ def extract_split_metafeatures(
         feature_sets=feature_sets,
         pymfe_groups=pymfe_groups,
         pymfe_summary=pymfe_summary,
+        pymfe_per_feature_timeout_s=pymfe_per_feature_timeout_s,
         trace=trace,
         trace_label=_split_trace_label(dataset, repeat, fold),
     )
@@ -176,6 +178,7 @@ def _process_one_split(
     feature_sets: tuple[str, ...],
     pymfe_groups: tuple[str, ...],
     pymfe_summary: tuple[str, ...],
+    pymfe_per_feature_timeout_s: float | None,
     cache_root: str,
     cache_identity: str,
     use_cache: bool,
@@ -204,6 +207,7 @@ def _process_one_split(
             feature_sets=feature_sets,
             pymfe_groups=pymfe_groups,
             pymfe_summary=pymfe_summary,
+            pymfe_per_feature_timeout_s=pymfe_per_feature_timeout_s,
             trace=trace,
         )
         if use_cache:
@@ -232,6 +236,7 @@ def build_metafeature_table(
     use_cache: bool = True,
     pymfe_groups: tuple[str, ...] = ("general", "statistical", "info-theory"),
     pymfe_summary: tuple[str, ...] = ("mean", "sd"),
+    pymfe_per_feature_timeout_s: float | None = None,
     trace: bool = False,
     irregularity_components: tuple[str, ...] = DEFAULT_IRREGULARITY_COMPONENTS,
     cache_version: int | None = None,
@@ -248,6 +253,7 @@ def build_metafeature_table(
             "feature_sets": feature_sets,
             "pymfe_groups": pymfe_groups,
             "pymfe_summary": pymfe_summary,
+            "pymfe_per_feature_timeout_s": pymfe_per_feature_timeout_s,
             "irregularity_components": irregularity_components,
             "cache_version": cache_version,
         }
@@ -298,6 +304,7 @@ def build_metafeature_table(
             feature_sets=feature_sets,
             pymfe_groups=pymfe_groups,
             pymfe_summary=pymfe_summary,
+            pymfe_per_feature_timeout_s=pymfe_per_feature_timeout_s,
             cache_root=cache_root,
             cache_identity=cache_identity,
             use_cache=effective_use_cache,
@@ -310,6 +317,7 @@ def build_metafeature_table(
             feature_sets=feature_sets,
             pymfe_groups=pymfe_groups,
             pymfe_summary=pymfe_summary,
+            pymfe_per_feature_timeout_s=pymfe_per_feature_timeout_s,
             cache_root=cache_root,
             cache_identity=cache_identity,
             use_cache=effective_use_cache,
@@ -375,6 +383,7 @@ def _build_sequential(
     feature_sets: tuple[str, ...],
     pymfe_groups: tuple[str, ...],
     pymfe_summary: tuple[str, ...],
+    pymfe_per_feature_timeout_s: float | None,
     cache_root: Path,
     cache_identity: str,
     use_cache: bool,
@@ -436,6 +445,7 @@ def _build_sequential(
                     feature_sets=feature_sets,
                     pymfe_groups=pymfe_groups,
                     pymfe_summary=pymfe_summary,
+                    pymfe_per_feature_timeout_s=pymfe_per_feature_timeout_s,
                     trace=trace,
                 )
                 for set_name, err in split_failed_sets.items():
@@ -483,6 +493,7 @@ def _build_parallel(
     feature_sets: tuple[str, ...],
     pymfe_groups: tuple[str, ...],
     pymfe_summary: tuple[str, ...],
+    pymfe_per_feature_timeout_s: float | None,
     cache_root: Path,
     cache_identity: str,
     use_cache: bool,
@@ -599,6 +610,7 @@ def _build_parallel(
                         feature_sets,
                         pymfe_groups,
                         pymfe_summary,
+                        pymfe_per_feature_timeout_s,
                         cache_root_str,
                         cache_identity,
                         use_cache,
@@ -646,6 +658,7 @@ def _build_parallel(
                             feature_sets,
                             pymfe_groups,
                             pymfe_summary,
+                            pymfe_per_feature_timeout_s,
                             cache_root_str,
                             cache_identity,
                             use_cache,

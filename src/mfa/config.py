@@ -33,6 +33,7 @@ class MetafeatureSettings:
     feature_sets: tuple[str, ...] = ("basic", "irregularity")
     pymfe_groups: tuple[str, ...] = ("general", "statistical", "info-theory")
     pymfe_summary: tuple[str, ...] = ("mean", "sd")
+    pymfe_per_feature_timeout_s: float | None = None
     trace: bool = False
     irregularity_components: tuple[str, ...] = (
         "irreg_min_cov_eig",
@@ -204,10 +205,26 @@ def _parse_metafeatures(raw_metafeatures: Any) -> MetafeatureSettings:
             value = default
         return tuple(value)
 
+    raw_timeout = mapping.get("pymfe_per_feature_timeout_s")
+    if raw_timeout is None:
+        pymfe_per_feature_timeout_s: float | None = None
+    else:
+        try:
+            pymfe_per_feature_timeout_s = float(raw_timeout)
+        except (TypeError, ValueError) as err:
+            raise ConfigValidationError(
+                "`metafeatures.pymfe_per_feature_timeout_s` must be null or a positive number."
+            ) from err
+        if pymfe_per_feature_timeout_s <= 0:
+            raise ConfigValidationError(
+                "`metafeatures.pymfe_per_feature_timeout_s` must be null or a positive number."
+            )
+
     return MetafeatureSettings(
         feature_sets=_sequence_value("feature_sets", ["basic", "irregularity"]),
         pymfe_groups=_sequence_value("pymfe_groups", ["general", "statistical", "info-theory"]),
         pymfe_summary=_sequence_value("pymfe_summary", ["mean", "sd"]),
+        pymfe_per_feature_timeout_s=pymfe_per_feature_timeout_s,
         trace=bool(mapping.get("trace", False)),
         irregularity_components=_sequence_value(
             "irregularity_components",
