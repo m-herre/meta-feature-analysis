@@ -10,10 +10,19 @@ import pandas as pd
 
 from .._logging import get_logger
 from .basic import get_categorical_columns
+from .pymfe_catalog import PYMFE_CLASSIFICATION_ONLY, should_filter_classification_only
 
 logger = get_logger(__name__)
 
 PROCESS_TERMINATE_GRACE_S = 5
+
+
+def _regression_allowed_features(groups: tuple[str, ...]) -> list[str]:
+    """Enumerate pymfe features for the given groups minus the classification-only deny list."""
+    from pymfe.mfe import MFE
+
+    enumerated = MFE.valid_metafeatures(groups=tuple(groups))
+    return [feature for feature in enumerated if feature not in PYMFE_CLASSIFICATION_ONLY]
 
 
 def _trace_prefix(trace_label: str | None) -> str:
@@ -113,6 +122,7 @@ def _extract_per_feature_with_timeout(
     timeout_s: float,
     trace: bool,
     trace_label: str | None,
+    problem_type: str | None,
 ) -> dict[str, float]:
     """Extract pymfe features one at a time in isolated subprocesses.
 
@@ -132,8 +142,21 @@ def _extract_per_feature_with_timeout(
     skipped: list[str] = []
     ctx = mp.get_context()
 
+    filter_classification_only = should_filter_classification_only(problem_type)
     for group in groups:
         raw_features = tuple(MFE.valid_metafeatures(groups=(group,)))
+        if filter_classification_only:
+            skipped_in_group = [f for f in raw_features if f in PYMFE_CLASSIFICATION_ONLY]
+            raw_features = tuple(f for f in raw_features if f not in PYMFE_CLASSIFICATION_ONLY)
+            if trace and skipped_in_group:
+                logger.info(
+                    "%s: pymfe group `%s`: skipping %d classification-only feature(s) for problem_type=%s (%s)",
+                    trace_prefix,
+                    group,
+                    len(skipped_in_group),
+                    problem_type,
+                    ", ".join(skipped_in_group),
+                )
         if trace:
             logger.info(
                 "%s: pymfe group `%s`: computing %d feature(s) with per-feature timeout %.0fs",
@@ -248,6 +271,7 @@ def extract_pymfe_features(
     *,
     groups: tuple[str, ...],
     summary: tuple[str, ...],
+    problem_type: str | None = None,
     per_feature_timeout_s: float | None = None,
     trace: bool = False,
     trace_label: str | None = None,
@@ -271,6 +295,22 @@ def extract_pymfe_features(
     X_encoded, categorical_indices = _prepare_pymfe_input(X_train)
     y_encoded = None if y_train is None else y_train.to_numpy()
 
+    filter_classification_only = should_filter_classification_only(problem_type)
+    if filter_classification_only:
+        skipped_count = sum(
+            1
+            for group in groups
+            for feature in MFE.valid_metafeatures(groups=(group,))
+            if feature in PYMFE_CLASSIFICATION_ONLY
+        )
+        if skipped_count:
+            logger.info(
+                "%s: problem_type=%s; skipping %d classification-only pymfe feature(s)",
+                trace_prefix,
+                problem_type,
+                skipped_count,
+            )
+
     if per_feature_timeout_s is not None:
         return _extract_per_feature_with_timeout(
             X_encoded,
@@ -281,10 +321,17 @@ def extract_pymfe_features(
             per_feature_timeout_s,
             trace,
             trace_label,
+            problem_type,
         )
 
     if not trace:
-        mfe = MFE(groups=list(groups), summary=list(summary))
+        if filter_classification_only:
+            allowed = _regression_allowed_features(groups)
+            if not allowed:
+                return {}
+            mfe = MFE(groups=list(groups), features=allowed, summary=list(summary))
+        else:
+            mfe = MFE(groups=list(groups), summary=list(summary))
         mfe.fit(X_encoded.to_numpy(), y_encoded, cat_cols=categorical_indices)
         names, values = mfe.extract()
         return _normalize_pymfe_outputs(names, values)
@@ -292,6 +339,15 @@ def extract_pymfe_features(
     all_features: dict[str, float] = {}
     for group in groups:
         raw_features = tuple(MFE.valid_metafeatures(groups=(group,)))
+        if filter_classification_only:
+            raw_features = tuple(f for f in raw_features if f not in PYMFE_CLASSIFICATION_ONLY)
+            if not raw_features:
+                logger.info(
+                    "%s: pymfe group `%s`: all features classification-only, skipping group",
+                    trace_prefix,
+                    group,
+                )
+                continue
         logger.info(
             "%s: pymfe group `%s`: calculating %d raw feature(s) with summary=%s (%s)",
             trace_prefix,
@@ -301,7 +357,15 @@ def extract_pymfe_features(
             ", ".join(raw_features),
         )
         group_start = time.perf_counter()
-        mfe = MFE(groups=[group], summary=list(summary), measure_time="total_summ")
+        if filter_classification_only:
+            mfe = MFE(
+                groups=[group],
+                features=list(raw_features),
+                summary=list(summary),
+                measure_time="total_summ",
+            )
+        else:
+            mfe = MFE(groups=[group], summary=list(summary), measure_time="total_summ")
 
         fit_records: list[warnings.WarningMessage] = []
         try:

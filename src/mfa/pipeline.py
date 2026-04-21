@@ -20,6 +20,7 @@ from .gaps.pairwise import compute_pairwise_gaps
 from .groups import validate_groups_against_data
 from .metafeatures import build_metafeature_table
 from .metafeatures.basic import BASIC_METAFEATURE_SCHEMA_VERSION
+from .metafeatures.pymfe_catalog import PYMFE_FILTER_SCHEMA_VERSION
 from .metafeatures.redundancy import REDUNDANCY_METAFEATURE_SCHEMA_VERSION
 from .parallel import resolve_n_jobs
 from .stats.correction import apply_fdr_correction
@@ -106,6 +107,8 @@ def _schema_versions_for_feature_sets(feature_sets: tuple[str, ...]) -> dict[str
         schema_versions["basic"] = BASIC_METAFEATURE_SCHEMA_VERSION
     if "redundancy" in feature_sets:
         schema_versions["redundancy"] = REDUNDANCY_METAFEATURE_SCHEMA_VERSION
+    if "pymfe" in feature_sets:
+        schema_versions["pymfe_filter"] = PYMFE_FILTER_SCHEMA_VERSION
     return schema_versions
 
 

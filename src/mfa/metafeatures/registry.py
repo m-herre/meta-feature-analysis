@@ -100,6 +100,7 @@ def extract_requested_metafeatures(
                 y_train,
                 groups=pymfe_groups,
                 summary=pymfe_summary,
+                problem_type=problem_type,
                 per_feature_timeout_s=pymfe_per_feature_timeout_s,
                 trace=trace,
                 trace_label=trace_label,
