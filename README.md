@@ -201,21 +201,36 @@ One or more pairwise comparisons between groups. `delta_norm = group_a_error - g
 
 | Field | Type | Values | Default |
 |---|---|---|---|
-| `feature_sets` | list of strings | `basic`, `irregularity`, `pymfe` | `[basic, irregularity]` |
+| `feature_sets` | list of strings | `basic`, `irregularity`, `redundancy`, `pymfe` | `[basic, irregularity]` |
 | `pymfe_groups` | list of strings | pymfe feature groups (e.g. `general`, `statistical`, `info-theory`) | `[general, statistical, info-theory]` |
 | `pymfe_summary` | list of strings | pymfe summary functions (e.g. `mean`, `sd`, `min`, `max`) | `[mean, sd]` |
 | `trace` | bool | `true`, `false` | `false` |
 | `irregularity_components` | list of strings | See below | all four |
 
 Available feature sets:
-- `basic` — produces: `n`, `d`, `log_n`, `n_over_d`, `cat_fraction`, `missing_fraction`
+- `basic` — cheap, interpretable train-split descriptors:
+  - size/composition: `n`, `d`, `log_n`, `log_d`, `n_over_d`, `d_over_n`, `n_num_features`,
+    `n_cat_features`, `num_fraction`, `cat_fraction`
+  - target structure for known `binary`/`multiclass` tasks: `n_classes`, `class_entropy`,
+    `majority_class_fraction`, `minority_class_fraction`, `class_imbalance_ratio`
+  - categorical cardinality: `mean_cat_cardinality`, `max_cat_cardinality`,
+    `high_cardinality_fraction`, `cat_cardinality_to_n_ratio`
+  - missingness: `missing_fraction`, `row_missing_fraction`, `feature_missing_fraction`,
+    `num_missing_fraction`, `cat_missing_fraction`, `max_feature_missing_fraction`
+  - numeric shape: `mean_abs_skew`, `max_abs_skew`, `mean_kurtosis`,
+    `outlier_fraction_iqr`, `zero_fraction`
+  - low-information columns: `constant_feature_fraction`, `near_constant_feature_fraction`
 - `irregularity` — covariance eigenvalue-based composite score on numeric columns; produces individual components plus a combined `irregularity` column
+- `redundancy` — opt-in numeric correlation/eigenvalue descriptors: `mean_abs_corr`, `max_abs_corr`,
+  `high_corr_pair_fraction`, `effective_rank`, `participation_ratio`. It is skipped with `NaN`
+  outputs above 512 non-constant numeric columns because it builds a full correlation matrix.
 - `pymfe` — requires `pip install -e ".[pymfe]"`; extracts features via the pymfe library
 - `trace: true` — keeps metafeature caches enabled and logs per-split feature-set timings, exact `pymfe` subgroup contents, per-output `pymfe` timings, and captured warning causes on cache misses. For readable ordering, use `parallelism.n_jobs: 1`.
 
 Categorical handling note:
 - Columns with dtype `object`, pandas `category`, or `bool` are treated as categorical.
-- `basic` uses that classification for `cat_fraction`.
+- `basic` uses that classification for categorical counts, fractions, cardinality, and categorical missingness.
+- `high_cardinality_fraction` counts categorical columns with at least `max(50, 0.1 * n_train)` observed non-missing values.
 - `irregularity` runs on numeric columns only.
 - `pymfe` internally converts categorical columns to category codes before extraction.
 
@@ -291,8 +306,10 @@ For each configured comparison (`group_a` vs `group_b`), the package runs:
    - Positive deltas mean `group_a` has higher error than `group_b` for that split.
 
 4. **Compute split-level meta-features**
-   - `basic`: `n`, `d`, `log_n`, `n_over_d`, `cat_fraction`, `missing_fraction`.
+   - `basic`: train-split size, dimensionality, target balance for known classification tasks,
+     categorical cardinality, missingness, numeric shape, and constant/near-constant feature descriptors.
    - `irregularity`: component statistics on numeric columns, then a z-score-based irregularity proxy.
+   - `redundancy` (optional): bounded numeric correlation/eigenvalue descriptors.
    - `pymfe` (optional): extracted through `pymfe` when enabled, after filling categorical missings with the mode, numeric missings with the median, and encoding categorical columns as integer codes.
 
 5. **Join and aggregate analysis table**

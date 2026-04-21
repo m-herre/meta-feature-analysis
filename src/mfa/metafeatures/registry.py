@@ -6,8 +6,9 @@ from .._logging import get_logger
 from .basic import compute_basic_metafeatures, get_categorical_columns
 from .irregularity import compute_irregularity_components
 from .pymfe_features import extract_pymfe_features
+from .redundancy import compute_redundancy_metafeatures
 
-VALID_FEATURE_SETS = {"basic", "irregularity", "pymfe"}
+VALID_FEATURE_SETS = {"basic", "irregularity", "pymfe", "redundancy"}
 logger = get_logger(__name__)
 
 
@@ -27,6 +28,7 @@ def extract_requested_metafeatures(
     X_train,
     y_train,
     *,
+    problem_type: str | None = None,
     feature_sets: tuple[str, ...],
     pymfe_groups: tuple[str, ...],
     pymfe_summary: tuple[str, ...],
@@ -49,7 +51,7 @@ def extract_requested_metafeatures(
 
     if "basic" in feature_sets:
         basic_start = time.perf_counter() if trace else None
-        basic_features = compute_basic_metafeatures(X_train)
+        basic_features = compute_basic_metafeatures(X_train, y_train, problem_type=problem_type)
         features.update(basic_features)
         if trace:
             logger.info(
@@ -58,6 +60,21 @@ def extract_requested_metafeatures(
                 len(basic_features),
                 time.perf_counter() - basic_start,
                 ", ".join(sorted(basic_features)),
+            )
+
+    if "redundancy" in feature_sets:
+        redundancy_start = time.perf_counter() if trace else None
+        categorical_columns = get_categorical_columns(X_train)
+        X_num = X_train.drop(columns=categorical_columns, errors="ignore")
+        redundancy_features = compute_redundancy_metafeatures(X_num)
+        features.update(redundancy_features)
+        if trace:
+            logger.info(
+                "%s: feature set `redundancy`: calculated %d feature(s) in %.3fs (%s)",
+                trace_prefix,
+                len(redundancy_features),
+                time.perf_counter() - redundancy_start,
+                ", ".join(sorted(redundancy_features)),
             )
 
     if "irregularity" in feature_sets:

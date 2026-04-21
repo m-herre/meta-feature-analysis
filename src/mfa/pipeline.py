@@ -19,6 +19,8 @@ from .data.loader import load_tabarena_results
 from .gaps.pairwise import compute_pairwise_gaps
 from .groups import validate_groups_against_data
 from .metafeatures import build_metafeature_table
+from .metafeatures.basic import BASIC_METAFEATURE_SCHEMA_VERSION
+from .metafeatures.redundancy import REDUNDANCY_METAFEATURE_SCHEMA_VERSION
 from .parallel import resolve_n_jobs
 from .stats.correction import apply_fdr_correction
 from .stats.correlation import correlate_all
@@ -80,6 +82,31 @@ def _apply_problem_type_filter(
     if dataset_list is None:
         return sorted(allowed_set)
     return sorted(set(dataset_list) & allowed_set)
+
+
+def _metadata_problem_types_payload(task_metadata: pd.DataFrame, dataset_list: list[str] | None) -> list[dict] | None:
+    if "problem_type" not in task_metadata.columns:
+        return None
+    name_columns = [column for column in ("dataset", "name") if column in task_metadata.columns]
+    if not name_columns:
+        return None
+    metadata = task_metadata.copy()
+    if dataset_list is not None:
+        metadata = metadata[metadata[name_columns].isin(set(dataset_list)).any(axis=1)].copy()
+    name_column = "dataset" if "dataset" in metadata.columns else name_columns[0]
+    payload = metadata[[name_column, "problem_type"]].rename(columns={name_column: "dataset"})
+    payload = payload.drop_duplicates().sort_values(["dataset", "problem_type"], na_position="last")
+    payload = payload.where(pd.notna(payload), None)
+    return payload.to_dict(orient="records")
+
+
+def _schema_versions_for_feature_sets(feature_sets: tuple[str, ...]) -> dict[str, int]:
+    schema_versions: dict[str, int] = {}
+    if "basic" in feature_sets:
+        schema_versions["basic"] = BASIC_METAFEATURE_SCHEMA_VERSION
+    if "redundancy" in feature_sets:
+        schema_versions["redundancy"] = REDUNDANCY_METAFEATURE_SCHEMA_VERSION
+    return schema_versions
 
 
 def _serialize_correlation_result(result: CorrelationResult) -> dict:
@@ -277,6 +304,8 @@ def run_analysis(
             "pymfe_summary": config.metafeatures.pymfe_summary,
             "pymfe_per_feature_timeout_s": config.metafeatures.pymfe_per_feature_timeout_s,
             "irregularity_components": config.metafeatures.irregularity_components,
+            "schema_versions": _schema_versions_for_feature_sets(config.metafeatures.feature_sets),
+            "problem_types": _metadata_problem_types_payload(metadata, dataset_list),
         },
     )
     metafeature_cache_enabled = config.cache.enabled and config.cache.stages.metafeatures

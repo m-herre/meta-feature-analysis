@@ -13,7 +13,9 @@ import pandas as pd
 from .._logging import get_logger
 from ..cache import metafeature_split_cache_dir
 from ..parallel import get_executor, resolve_n_jobs
+from .basic import BASIC_METAFEATURE_SCHEMA_VERSION
 from .irregularity import DEFAULT_IRREGULARITY_COMPONENTS, add_irregularity_proxy
+from .redundancy import REDUNDANCY_METAFEATURE_SCHEMA_VERSION
 from .registry import extract_requested_metafeatures
 
 logger = get_logger(__name__)
@@ -51,6 +53,13 @@ def _metadata_task_id(row) -> int:
     raise ValueError("Task metadata must include either `tid` or `task_id`.")
 
 
+def _metadata_problem_type(row) -> str | None:
+    value = getattr(row, "problem_type", None)
+    if isinstance(value, str) and value:
+        return value.lower()
+    return None
+
+
 SPLIT_CACHE_HASH_COLUMN = "_cache_identity_hash"
 SPLIT_CACHE_FAILED_SETS_COLUMN = "_cache_failed_sets"
 _SPLIT_CACHE_INTERNAL_COLUMNS = (
@@ -70,6 +79,19 @@ def _metadata_split_dimensions(row) -> tuple[int | None, int | None]:
     if n_repeats is None or n_folds is None:
         return None, None
     return int(n_repeats), int(n_folds)
+
+
+def _schema_versions_for_feature_sets(feature_sets: tuple[str, ...]) -> dict[str, int]:
+    schema_versions: dict[str, int] = {}
+    if "basic" in feature_sets:
+        schema_versions["basic"] = BASIC_METAFEATURE_SCHEMA_VERSION
+    if "redundancy" in feature_sets:
+        schema_versions["redundancy"] = REDUNDANCY_METAFEATURE_SCHEMA_VERSION
+    return schema_versions
+
+
+def _split_cache_identity(base_payload: dict[str, Any], problem_type: str | None) -> str:
+    return _stable_feature_hash({**base_payload, "problem_type": problem_type})
 
 
 def _encode_failed_sets(failed_sets: dict[str, str]) -> str:
@@ -111,6 +133,7 @@ def extract_split_metafeatures(
     repeat: int,
     fold: int,
     *,
+    problem_type: str | None = None,
     feature_sets: tuple[str, ...] = ("basic", "irregularity"),
     pymfe_groups: tuple[str, ...] = ("general", "statistical", "info-theory"),
     pymfe_summary: tuple[str, ...] = ("mean", "sd"),
@@ -131,6 +154,7 @@ def extract_split_metafeatures(
     computed, failed_sets = extract_requested_metafeatures(
         X_train,
         y_train,
+        problem_type=problem_type,
         feature_sets=feature_sets,
         pymfe_groups=pymfe_groups,
         pymfe_summary=pymfe_summary,
@@ -175,6 +199,7 @@ def _process_one_split(
     task_id: int,
     repeat: int,
     fold: int,
+    problem_type: str | None,
     feature_sets: tuple[str, ...],
     pymfe_groups: tuple[str, ...],
     pymfe_summary: tuple[str, ...],
@@ -204,6 +229,7 @@ def _process_one_split(
             dataset,
             repeat,
             fold,
+            problem_type=problem_type,
             feature_sets=feature_sets,
             pymfe_groups=pymfe_groups,
             pymfe_summary=pymfe_summary,
@@ -248,16 +274,15 @@ def build_metafeature_table(
     cache_root = Path(cache_dir)
     cache_root.mkdir(parents=True, exist_ok=True)
     effective_use_cache = use_cache
-    cache_identity = _stable_feature_hash(
-        {
-            "feature_sets": feature_sets,
-            "pymfe_groups": pymfe_groups,
-            "pymfe_summary": pymfe_summary,
-            "pymfe_per_feature_timeout_s": pymfe_per_feature_timeout_s,
-            "irregularity_components": irregularity_components,
-            "cache_version": cache_version,
-        }
-    )
+    cache_identity_payload = {
+        "feature_sets": feature_sets,
+        "pymfe_groups": pymfe_groups,
+        "pymfe_summary": pymfe_summary,
+        "pymfe_per_feature_timeout_s": pymfe_per_feature_timeout_s,
+        "irregularity_components": irregularity_components,
+        "schema_versions": _schema_versions_for_feature_sets(feature_sets),
+        "cache_version": cache_version,
+    }
     metadata_subset = metadata.copy()
     if datasets is not None:
         metadata_subset = metadata_subset[
@@ -288,13 +313,14 @@ def build_metafeature_table(
         )
 
     # Pre-extract dataset info for both sequential and parallel paths
-    dataset_tasks: list[tuple[str, int, int | None, int | None]] = []
+    dataset_tasks: list[tuple[str, int, int | None, int | None, str | None]] = []
     for row in metadata_subset.itertuples(index=False):
         dataset_tasks.append(
             (
                 _metadata_dataset_name(row),
                 _metadata_task_id(row),
                 *_metadata_split_dimensions(row),
+                _metadata_problem_type(row),
             )
         )
 
@@ -306,7 +332,7 @@ def build_metafeature_table(
             pymfe_summary=pymfe_summary,
             pymfe_per_feature_timeout_s=pymfe_per_feature_timeout_s,
             cache_root=cache_root,
-            cache_identity=cache_identity,
+            cache_identity_payload=cache_identity_payload,
             use_cache=effective_use_cache,
             overall_start=overall_start,
             trace=trace,
@@ -319,7 +345,7 @@ def build_metafeature_table(
             pymfe_summary=pymfe_summary,
             pymfe_per_feature_timeout_s=pymfe_per_feature_timeout_s,
             cache_root=cache_root,
-            cache_identity=cache_identity,
+            cache_identity_payload=cache_identity_payload,
             use_cache=effective_use_cache,
             overall_start=overall_start,
             n_jobs=resolved_n_jobs,
@@ -379,13 +405,13 @@ def _log_failed_feature_sets(
 
 def _build_sequential(
     *,
-    dataset_tasks: list[tuple[str, int, int | None, int | None]],
+    dataset_tasks: list[tuple[str, int, int | None, int | None, str | None]],
     feature_sets: tuple[str, ...],
     pymfe_groups: tuple[str, ...],
     pymfe_summary: tuple[str, ...],
     pymfe_per_feature_timeout_s: float | None,
     cache_root: Path,
-    cache_identity: str,
+    cache_identity_payload: dict[str, Any],
     use_cache: bool,
     overall_start: float,
     trace: bool,
@@ -396,7 +422,8 @@ def _build_sequential(
     total_computed_splits = 0
     total_datasets = len(dataset_tasks)
     failed_feature_sets: dict[str, dict[tuple[str, int, int], str]] = {}
-    for dataset_index, (dataset, task_id, n_repeats, n_folds) in enumerate(dataset_tasks, start=1):
+    for dataset_index, (dataset, task_id, n_repeats, n_folds, problem_type) in enumerate(dataset_tasks, start=1):
+        split_cache_identity = _split_cache_identity(cache_identity_payload, problem_type)
         task = None
         if n_repeats is None or n_folds is None:
             from tabarena.benchmark.task.openml import OpenMLTaskWrapper
@@ -421,7 +448,7 @@ def _build_sequential(
             for fold in range(n_folds):
                 split_path = _split_cache_path(cache_root, dataset, repeat, fold)
                 if use_cache and split_path.exists():
-                    cached = _read_cached_split(split_path, cache_identity)
+                    cached = _read_cached_split(split_path, split_cache_identity)
                     if cached is not None:
                         cached_row, cached_failed_sets = cached
                         rows.append(cached_row)
@@ -442,6 +469,7 @@ def _build_sequential(
                     dataset,
                     repeat,
                     fold,
+                    problem_type=problem_type,
                     feature_sets=feature_sets,
                     pymfe_groups=pymfe_groups,
                     pymfe_summary=pymfe_summary,
@@ -466,7 +494,7 @@ def _build_sequential(
                         [
                             {
                                 **split_row,
-                                SPLIT_CACHE_HASH_COLUMN: cache_identity,
+                                SPLIT_CACHE_HASH_COLUMN: split_cache_identity,
                                 SPLIT_CACHE_FAILED_SETS_COLUMN: _encode_failed_sets(split_failed_sets),
                             }
                         ]
@@ -489,13 +517,13 @@ def _build_sequential(
 
 def _build_parallel(
     *,
-    dataset_tasks: list[tuple[str, int, int | None, int | None]],
+    dataset_tasks: list[tuple[str, int, int | None, int | None, str | None]],
     feature_sets: tuple[str, ...],
     pymfe_groups: tuple[str, ...],
     pymfe_summary: tuple[str, ...],
     pymfe_per_feature_timeout_s: float | None,
     cache_root: Path,
-    cache_identity: str,
+    cache_identity_payload: dict[str, Any],
     use_cache: bool,
     overall_start: float,
     n_jobs: int,
@@ -513,7 +541,7 @@ def _build_parallel(
     # load the task once in the main process to discover them (rare in practice).
     missing_dims = [
         (dataset, task_id)
-        for dataset, task_id, n_repeats, n_folds in dataset_tasks
+        for dataset, task_id, n_repeats, n_folds, _problem_type in dataset_tasks
         if n_repeats is None or n_folds is None
     ]
     resolved_dims: dict[str, tuple[int, int]] = {}
@@ -527,13 +555,14 @@ def _build_parallel(
                 raise ValueError("Expected exactly one sample per (repeat, fold) split.")
             resolved_dims[dataset] = (n_rep, n_fld)
 
-    split_units: list[tuple[str, int, int, int]] = []
-    for dataset, task_id, n_repeats, n_folds in dataset_tasks:
+    split_units: list[tuple[str, int, int, int, str | None, str]] = []
+    for dataset, task_id, n_repeats, n_folds, problem_type in dataset_tasks:
         if n_repeats is None or n_folds is None:
             n_repeats, n_folds = resolved_dims[dataset]
+        split_cache_identity = _split_cache_identity(cache_identity_payload, problem_type)
         for repeat in range(n_repeats):
             for fold in range(n_folds):
-                split_units.append((dataset, task_id, repeat, fold))
+                split_units.append((dataset, task_id, repeat, fold, problem_type, split_cache_identity))
 
     total_splits = len(split_units)
     total_cached = 0
@@ -607,6 +636,7 @@ def _build_parallel(
                         task_id,
                         repeat,
                         fold,
+                        problem_type,
                         feature_sets,
                         pymfe_groups,
                         pymfe_summary,
@@ -616,7 +646,7 @@ def _build_parallel(
                         use_cache,
                         trace,
                     )
-                    for dataset, task_id, repeat, fold in pending
+                    for dataset, task_id, repeat, fold, problem_type, cache_identity in pending
                 ]
                 for future in as_completed(futures):
                     try:
@@ -648,13 +678,14 @@ def _build_parallel(
                     pool_break_retries,
                     len(pending),
                 )
-                for dataset, task_id, repeat, fold in pending:
+                for dataset, task_id, repeat, fold, problem_type, cache_identity in pending:
                     _record(
                         _process_one_split(
                             dataset,
                             task_id,
                             repeat,
                             fold,
+                            problem_type,
                             feature_sets,
                             pymfe_groups,
                             pymfe_summary,

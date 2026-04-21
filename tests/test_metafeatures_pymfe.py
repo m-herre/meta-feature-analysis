@@ -415,7 +415,7 @@ def test_extract_requested_metafeatures_propagates_basic_failures(monkeypatch) -
     """basic and irregularity are not best-effort — internal failures must surface."""
     import mfa.metafeatures.registry as registry
 
-    def exploding_basic(_X_train):
+    def exploding_basic(_X_train, _y_train=None, problem_type=None):
         raise ValueError("deliberate basic failure")
 
     monkeypatch.setattr(registry, "compute_basic_metafeatures", exploding_basic)

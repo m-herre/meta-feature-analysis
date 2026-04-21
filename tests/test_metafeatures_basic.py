@@ -8,23 +8,55 @@ import pandas as pd
 
 from mfa.metafeatures import build_metafeature_table
 from mfa.metafeatures.basic import compute_basic_metafeatures
+from mfa.metafeatures.redundancy import compute_redundancy_metafeatures
+from mfa.metafeatures.registry import extract_requested_metafeatures
 
 
 def test_compute_basic_metafeatures_known_values() -> None:
     X = pd.DataFrame(
         {
-            "num": [1.0, 2.0, np.nan, 4.0],
+            "num": [0.0, 1.0, 2.0, 100.0],
+            "constant": [1.0, 1.0, 1.0, 1.0],
             "cat": pd.Series(["a", "b", "a", None], dtype="category"),
             "flag": [True, False, True, True],
         }
     )
-    features = compute_basic_metafeatures(X)
+    y = pd.Series([0, 0, 1, 1])
+    features = compute_basic_metafeatures(X, y, problem_type="binary")
     assert features["n"] == 4
-    assert features["d"] == 3
+    assert features["d"] == 4
     assert math.isclose(features["log_n"], math.log10(4))
-    assert math.isclose(features["n_over_d"], 4 / 3)
-    assert math.isclose(features["cat_fraction"], 2 / 3)
-    assert math.isclose(features["missing_fraction"], (1 / 4 + 1 / 4 + 0) / 3)
+    assert math.isclose(features["log_d"], math.log10(4))
+    assert math.isclose(features["n_over_d"], 1.0)
+    assert math.isclose(features["d_over_n"], 1.0)
+    assert features["n_num_features"] == 2
+    assert features["n_cat_features"] == 2
+    assert math.isclose(features["num_fraction"], 0.5)
+    assert math.isclose(features["cat_fraction"], 0.5)
+    assert math.isclose(features["missing_fraction"], 1 / 16)
+    assert features["n_classes"] == 2
+    assert math.isclose(features["class_entropy"], 1.0)
+    assert math.isclose(features["majority_class_fraction"], 0.5)
+    assert math.isclose(features["minority_class_fraction"], 0.5)
+    assert math.isclose(features["class_imbalance_ratio"], 1.0)
+    assert math.isclose(features["mean_cat_cardinality"], 2.0)
+    assert math.isclose(features["max_cat_cardinality"], 2.0)
+    assert math.isclose(features["high_cardinality_fraction"], 0.0)
+    assert math.isclose(features["cat_cardinality_to_n_ratio"], 0.5)
+    assert math.isclose(features["row_missing_fraction"], 0.25)
+    assert math.isclose(features["feature_missing_fraction"], 0.25)
+    assert math.isclose(features["num_missing_fraction"], 0.0)
+    assert math.isclose(features["cat_missing_fraction"], 0.125)
+    assert math.isclose(features["max_feature_missing_fraction"], 0.25)
+    assert math.isclose(features["outlier_fraction_iqr"], 1 / 8)
+    assert math.isclose(features["zero_fraction"], 1 / 8)
+    assert math.isclose(features["constant_feature_fraction"], 0.25)
+    assert math.isclose(features["near_constant_feature_fraction"], 0.25)
+    assert "mean_abs_corr" not in features
+    assert "effective_rank" not in features
+    expected_numeric = X[["num", "constant"]]
+    assert math.isclose(features["mean_abs_skew"], expected_numeric.skew().abs().mean())
+    assert math.isclose(features["mean_kurtosis"], expected_numeric.kurt().mean())
 
 
 def test_compute_basic_metafeatures_zero_columns() -> None:
@@ -32,9 +64,139 @@ def test_compute_basic_metafeatures_zero_columns() -> None:
     features = compute_basic_metafeatures(X)
     assert features["n"] == 5
     assert features["d"] == 0
+    assert np.isnan(features["log_d"])
     assert np.isnan(features["n_over_d"])
     assert np.isnan(features["cat_fraction"])
     assert np.isnan(features["missing_fraction"])
+    assert np.isnan(features["mean_cat_cardinality"])
+    assert np.isnan(features["row_missing_fraction"])
+    assert np.isnan(features["constant_feature_fraction"])
+
+
+def test_compute_basic_metafeatures_requires_classification_problem_type_for_target_features() -> None:
+    X = pd.DataFrame({"num": np.arange(100, dtype=float)})
+    y = pd.Series([0, 1] * 50)
+
+    features = compute_basic_metafeatures(X, y)
+
+    assert np.isnan(features["n_classes"])
+    assert np.isnan(features["class_entropy"])
+    assert np.isnan(features["majority_class_fraction"])
+    assert np.isnan(features["minority_class_fraction"])
+    assert np.isnan(features["class_imbalance_ratio"])
+
+
+def test_compute_basic_metafeatures_treats_regression_problem_type_targets_as_missing() -> None:
+    X = pd.DataFrame({"num": np.arange(100, dtype=float)})
+    y = pd.Series(np.arange(100))
+
+    features = compute_basic_metafeatures(X, y, problem_type="regression")
+
+    assert np.isnan(features["n_classes"])
+    assert np.isnan(features["class_entropy"])
+    assert np.isnan(features["majority_class_fraction"])
+    assert np.isnan(features["minority_class_fraction"])
+    assert np.isnan(features["class_imbalance_ratio"])
+
+
+def test_compute_redundancy_metafeatures_known_values() -> None:
+    X = pd.DataFrame(
+        {
+            "a": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "b": [2.0, 4.0, 6.0, 8.0, 10.0],
+            "c": [5.0, 4.0, 3.0, 2.0, 1.0],
+        }
+    )
+
+    features = compute_redundancy_metafeatures(X)
+
+    assert math.isclose(features["mean_abs_corr"], 1.0)
+    assert math.isclose(features["max_abs_corr"], 1.0)
+    assert math.isclose(features["high_corr_pair_fraction"], 1.0)
+    assert math.isclose(features["effective_rank"], 1.0)
+    assert math.isclose(features["participation_ratio"], 1.0)
+
+
+def test_extract_requested_metafeatures_supports_redundancy_feature_set() -> None:
+    X = pd.DataFrame(
+        {
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "b": [2.0, 4.0, 6.0, 8.0],
+        }
+    )
+
+    features, failed_sets = extract_requested_metafeatures(
+        X,
+        pd.Series([0, 1, 0, 1]),
+        feature_sets=("redundancy",),
+        pymfe_groups=(),
+        pymfe_summary=(),
+    )
+
+    assert failed_sets == {}
+    assert "n" not in features
+    assert math.isclose(features["mean_abs_corr"], 1.0)
+    assert math.isclose(features["effective_rank"], 1.0)
+
+
+def test_compute_redundancy_metafeatures_respects_width_cap() -> None:
+    from mfa.metafeatures.redundancy import MAX_REDUNDANCY_NUMERIC_FEATURES
+
+    X = pd.DataFrame(
+        np.tile(np.arange(3, dtype=float).reshape(-1, 1), (1, MAX_REDUNDANCY_NUMERIC_FEATURES + 1)),
+        columns=[f"x_{idx}" for idx in range(MAX_REDUNDANCY_NUMERIC_FEATURES + 1)],
+    )
+
+    features = compute_redundancy_metafeatures(X)
+
+    assert np.isnan(features["mean_abs_corr"])
+    assert np.isnan(features["effective_rank"])
+
+
+def test_build_metafeature_table_uses_metadata_problem_type_for_target_features(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    metadata = pd.DataFrame(
+        {
+            "dataset": ["classification_dataset", "regression_dataset"],
+            "tid": [1, 2],
+            "problem_type": ["binary", "regression"],
+            "n_repeats": [1, 1],
+            "n_folds": [1, 1],
+        }
+    )
+
+    class FakeTask:
+        def __init__(self, task_id: int) -> None:
+            self.task_id = task_id
+
+        def get_split_dimensions(self) -> tuple[int, int, int]:
+            return 1, 1, 1
+
+        def get_train_test_split(self, *, fold: int, repeat: int):
+            X = pd.DataFrame({"num": [1.0, 2.0, 3.0, 4.0]})
+            y = pd.Series([0, 1, 0, 1])
+            return X, y, X, y
+
+    monkeypatch.setattr(
+        "tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id",
+        lambda task_id: FakeTask(task_id),
+    )
+
+    table = build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=False,
+        feature_sets=("basic",),
+    )
+
+    classification = table.loc[table["dataset"] == "classification_dataset"].iloc[0]
+    regression = table.loc[table["dataset"] == "regression_dataset"].iloc[0]
+    assert classification["n_classes"] == 2
+    assert math.isclose(classification["class_entropy"], 1.0)
+    assert np.isnan(regression["n_classes"])
+    assert np.isnan(regression["class_entropy"])
 
 
 def test_build_metafeature_table_reuses_split_cache_and_invalidates_on_version(
@@ -78,6 +240,72 @@ def test_build_metafeature_table_reuses_split_cache_and_invalidates_on_version(
 
     monkeypatch.setattr("tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id", fake_from_task_id)
     third = build_metafeature_table(metadata, cache_dir=tmp_path, use_cache=True, cache_version=2)
+    assert call_counter["count"] == 2
+    pd.testing.assert_frame_equal(third, first)
+
+
+def test_build_metafeature_table_invalidates_split_cache_on_basic_schema_change(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import mfa.metafeatures as mfa_metafeatures
+
+    metadata = pd.DataFrame(
+        {
+            "dataset": ["dataset_a"],
+            "tid": [1],
+            "n_repeats": [1],
+            "n_folds": [1],
+        }
+    )
+    call_counter = {"count": 0}
+
+    class FakeTask:
+        def get_split_dimensions(self) -> tuple[int, int, int]:
+            return 1, 1, 1
+
+        def get_train_test_split(self, *, fold: int, repeat: int):
+            X = pd.DataFrame({"num": [1.0, 2.0, 3.0]})
+            y = pd.Series([0, 1, 0])
+            return X, y, X, y
+
+    def fake_from_task_id(task_id: int) -> FakeTask:
+        call_counter["count"] += 1
+        return FakeTask()
+
+    monkeypatch.setattr("tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id", fake_from_task_id)
+
+    first = build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        cache_version=1,
+        feature_sets=("basic",),
+    )
+    assert call_counter["count"] == 1
+
+    def fail_from_task_id(task_id: int) -> FakeTask:
+        raise AssertionError("Same schema should hit the split cache.")
+
+    monkeypatch.setattr("tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id", fail_from_task_id)
+    second = build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        cache_version=1,
+        feature_sets=("basic",),
+    )
+    pd.testing.assert_frame_equal(second, first)
+
+    monkeypatch.setattr(mfa_metafeatures, "BASIC_METAFEATURE_SCHEMA_VERSION", 999)
+    monkeypatch.setattr("tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id", fake_from_task_id)
+    third = build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        cache_version=1,
+        feature_sets=("basic",),
+    )
     assert call_counter["count"] == 2
     pd.testing.assert_frame_equal(third, first)
 
