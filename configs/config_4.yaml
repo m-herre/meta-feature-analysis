@@ -61,7 +61,7 @@ metafeatures:
     - itemset
   pymfe_summary: [mean]
   trace: true
-  pymfe_per_feature_timeout_s: 120  # null or omitted → batch mode (unchanged)
+  pymfe_per_feature_timeout_s: 240  # null or omitted → batch mode (unchanged)
   irregularity_components:
     - irreg_min_cov_eig
     - irreg_std_skew
