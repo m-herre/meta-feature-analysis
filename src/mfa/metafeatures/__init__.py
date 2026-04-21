@@ -14,7 +14,10 @@ from .._logging import get_logger
 from ..cache import metafeature_split_cache_dir
 from ..parallel import get_executor, resolve_n_jobs
 from .basic import BASIC_METAFEATURE_SCHEMA_VERSION
-from .irregularity import DEFAULT_IRREGULARITY_COMPONENTS, add_irregularity_proxy
+from .irregularity import (
+    DEFAULT_IRREGULARITY_COMPONENTS,
+    IRREGULARITY_PROXY_SCHEMA_VERSION,
+)
 from .pymfe_catalog import PYMFE_FILTER_SCHEMA_VERSION
 from .redundancy import REDUNDANCY_METAFEATURE_SCHEMA_VERSION
 from .registry import extract_requested_metafeatures
@@ -86,6 +89,8 @@ def _schema_versions_for_feature_sets(feature_sets: tuple[str, ...]) -> dict[str
     schema_versions: dict[str, int] = {}
     if "basic" in feature_sets:
         schema_versions["basic"] = BASIC_METAFEATURE_SCHEMA_VERSION
+    if "irregularity" in feature_sets:
+        schema_versions["irregularity"] = IRREGULARITY_PROXY_SCHEMA_VERSION
     if "redundancy" in feature_sets:
         schema_versions["redundancy"] = REDUNDANCY_METAFEATURE_SCHEMA_VERSION
     if "pymfe" in feature_sets:
@@ -369,9 +374,14 @@ def build_metafeature_table(
 
     _log_failed_feature_sets(failed_feature_sets, total_splits=len(metafeature_table))
 
-    if "irregularity" not in feature_sets and "irregularity" not in metafeature_table.columns:
-        return metafeature_table
-    return add_irregularity_proxy(metafeature_table, components=irregularity_components)
+    # NOTE: The `irregularity` composite is deliberately NOT added here.
+    # The paper defines it as a z-score across *datasets*, not across the
+    # per-(dataset,repeat,fold) rows this stage emits. Doing it here would
+    # let datasets with more splits dominate the normalization. The
+    # composite is attached at the analysis-table level in
+    # `mfa.aggregation.build_analysis_table`, where rows are one per dataset
+    # (or broadcast back for `unit=fold`).
+    return metafeature_table
 
 
 def _log_failed_feature_sets(

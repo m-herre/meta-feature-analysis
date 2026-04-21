@@ -43,6 +43,7 @@ def config_dict() -> dict:
                 "irreg_min_cov_eig",
                 "irreg_std_skew",
                 "irreg_range_skew",
+                "irreg_iqr_hmean",
                 "irreg_kurtosis_std",
             ],
         },

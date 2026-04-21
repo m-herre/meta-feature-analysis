@@ -20,6 +20,7 @@ from .gaps.pairwise import compute_pairwise_gaps
 from .groups import validate_groups_against_data
 from .metafeatures import build_metafeature_table
 from .metafeatures.basic import BASIC_METAFEATURE_SCHEMA_VERSION
+from .metafeatures.irregularity import IRREGULARITY_PROXY_SCHEMA_VERSION
 from .metafeatures.pymfe_catalog import PYMFE_FILTER_SCHEMA_VERSION
 from .metafeatures.redundancy import REDUNDANCY_METAFEATURE_SCHEMA_VERSION
 from .parallel import resolve_n_jobs
@@ -105,6 +106,8 @@ def _schema_versions_for_feature_sets(feature_sets: tuple[str, ...]) -> dict[str
     schema_versions: dict[str, int] = {}
     if "basic" in feature_sets:
         schema_versions["basic"] = BASIC_METAFEATURE_SCHEMA_VERSION
+    if "irregularity" in feature_sets:
+        schema_versions["irregularity"] = IRREGULARITY_PROXY_SCHEMA_VERSION
     if "redundancy" in feature_sets:
         schema_versions["redundancy"] = REDUNDANCY_METAFEATURE_SCHEMA_VERSION
     if "pymfe" in feature_sets:
@@ -374,6 +377,7 @@ def run_analysis(
         gap_table,
         metafeature_table,
         unit=config.analysis.unit,
+        irregularity_components=config.metafeatures.irregularity_components,
     )
     logger.info("Stage 4/5 analysis table: ready (%s)", _frame_summary(analysis_table))
     predictor_columns = [
@@ -381,6 +385,11 @@ def run_analysis(
         for column in metafeature_table.columns
         if column not in {"dataset", "repeat", "fold"} and not column.startswith("_")
     ]
+    # The composite ``irregularity`` is attached during stage-4 aggregation
+    # (z-scoring is over datasets, not splits), so it is absent from the
+    # stage-2 metafeature table. Surface it as a predictor when available.
+    if "irregularity" in analysis_table.columns and "irregularity" not in predictor_columns:
+        predictor_columns.append("irregularity")
     analysis_hash = _analysis_stage_hash(
         gap_hash=gap_hash,
         metafeature_hash=metafeature_hash,

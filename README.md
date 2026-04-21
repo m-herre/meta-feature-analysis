@@ -205,7 +205,7 @@ One or more pairwise comparisons between groups. `delta_norm = group_a_error - g
 | `pymfe_groups` | list of strings | pymfe feature groups (e.g. `general`, `statistical`, `info-theory`) | `[general, statistical, info-theory]` |
 | `pymfe_summary` | list of strings | pymfe summary functions (e.g. `mean`, `sd`, `min`, `max`) | `[mean, sd]` |
 | `trace` | bool | `true`, `false` | `false` |
-| `irregularity_components` | list of strings | See below | all four |
+| `irregularity_components` | list of strings | See below | all five |
 
 Available feature sets:
 - `basic` — cheap, interpretable train-split descriptors:
@@ -220,7 +220,7 @@ Available feature sets:
   - numeric shape: `mean_abs_skew`, `max_abs_skew`, `mean_kurtosis`,
     `outlier_fraction_iqr`, `zero_fraction`
   - low-information columns: `constant_feature_fraction`, `near_constant_feature_fraction`
-- `irregularity` — covariance eigenvalue-based composite score on numeric columns; produces individual components plus a combined `irregularity` column
+- `irregularity` — reproduction of the paper's 5-component composite on numeric columns. Components: `irreg_min_cov_eig` (min eigenvalue of the standardized covariance), `irreg_std_skew` (skewness of per-feature stds), `irreg_range_skew` (skewness of per-feature ranges), `irreg_iqr_hmean` (IQR of per-feature harmonic means, computed only over strictly-positive columns), `irreg_kurtosis_std` (std of per-feature kurtoses). The combined `irregularity` column is the weighted sum of per-component z-scores with the paper's coefficients `(-0.33, +0.23, +0.22, +0.21, +0.21)`. Z-scoring is performed across the datasets in the current analysis run.
 - `redundancy` — opt-in numeric correlation/eigenvalue descriptors: `mean_abs_corr`, `max_abs_corr`,
   `high_corr_pair_fraction`, `effective_rank`, `participation_ratio`. It is skipped with `NaN`
   outputs above 512 non-constant numeric columns because it builds a full correlation matrix.

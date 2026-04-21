@@ -5,6 +5,10 @@ import warnings
 import numpy as np
 import pandas as pd
 
+from .metafeatures.irregularity import (
+    DEFAULT_IRREGULARITY_COMPONENTS,
+    add_irregularity_proxy,
+)
 from .types import AnalysisUnit
 
 
@@ -94,11 +98,40 @@ def _build_aggregations(analysis: pd.DataFrame, metafeature_table: pd.DataFrame)
     return aggregations
 
 
+def _unique_dataset_irregularity(
+    dataset_level_df: pd.DataFrame,
+    *,
+    components: tuple[str, ...] = DEFAULT_IRREGULARITY_COMPONENTS,
+) -> pd.DataFrame:
+    """Return a ``(dataset, irregularity)`` table with one row per dataset.
+
+    ``dataset_level_df`` is grouped by ``GROUP_COLUMNS`` (which includes
+    ``comparison_name``), so the same dataset appears once per comparison
+    with identical component values. Z-scoring across those rows would
+    double-count datasets that participate in more comparisons and
+    silently re-weight the global mean/std by comparison availability
+    rather than by dataset properties. We collapse to unique datasets
+    first, compute the composite there, and broadcast it back via merge.
+    """
+    available = [column for column in components if column in dataset_level_df.columns]
+    unique_datasets = dataset_level_df[["dataset"]].drop_duplicates().reset_index(drop=True)
+    if not available:
+        return unique_datasets.assign(irregularity=np.nan)
+    unique_rows = (
+        dataset_level_df[["dataset", *available]]
+        .drop_duplicates(subset=["dataset"])
+        .reset_index(drop=True)
+    )
+    with_composite = add_irregularity_proxy(unique_rows, components=tuple(available))
+    return with_composite[["dataset", "irregularity"]]
+
+
 def build_analysis_table(
     gap_table: pd.DataFrame,
     metafeature_table: pd.DataFrame,
     *,
     unit: AnalysisUnit = AnalysisUnit.DATASET,
+    irregularity_components: tuple[str, ...] = DEFAULT_IRREGULARITY_COMPONENTS,
 ) -> pd.DataFrame:
     """Join gaps with meta-features and optionally aggregate to dataset level."""
     if set(JOIN_KEY_COLUMNS).issubset(metafeature_table.columns) and set(JOIN_KEY_COLUMNS).issubset(gap_table.columns):
@@ -110,13 +143,44 @@ def build_analysis_table(
         )
     else:
         analysis = _empty_analysis_table(metafeature_table, gap_table)
+
+    aggregations = _build_aggregations(analysis, metafeature_table)
+    components_present = any(column in metafeature_table.columns for column in irregularity_components)
+    if not analysis.empty:
+        dataset_level = analysis.groupby(GROUP_COLUMNS, as_index=False, dropna=False).agg(**aggregations)
+        if components_present:
+            irregularity_lookup = _unique_dataset_irregularity(
+                dataset_level, components=irregularity_components
+            )
+            dataset_level = dataset_level.drop(columns=["irregularity"], errors="ignore").merge(
+                irregularity_lookup, on="dataset", how="left", validate="many_to_one"
+            )
+        else:
+            irregularity_lookup = None
+    else:
+        dataset_level = analysis.copy()
+        if "irregularity" not in dataset_level.columns:
+            dataset_level["irregularity"] = np.nan
+        irregularity_lookup = None
+
     if unit == AnalysisUnit.FOLD:
         warnings.warn(
             "Fold-level analysis treats non-independent folds as separate observations.",
             stacklevel=2,
         )
-        return analysis.sort_values(["comparison_name", "dataset", "repeat", "fold"]).reset_index(drop=True)
+        if irregularity_lookup is not None:
+            # Broadcast the unique-per-dataset composite back onto per-split
+            # rows. Merging on `dataset` against a unique-per-dataset lookup
+            # keeps fold row counts unchanged even when a dataset participates
+            # in multiple comparisons.
+            fold_level = analysis.drop(columns=["irregularity"], errors="ignore").merge(
+                irregularity_lookup,
+                on="dataset",
+                how="left",
+                validate="many_to_one",
+            )
+        else:
+            fold_level = analysis
+        return fold_level.sort_values(["comparison_name", "dataset", "repeat", "fold"]).reset_index(drop=True)
 
-    aggregations = _build_aggregations(analysis, metafeature_table)
-    dataset_level = analysis.groupby(GROUP_COLUMNS, as_index=False, dropna=False).agg(**aggregations)
     return dataset_level.sort_values(["comparison_name", "dataset"]).reset_index(drop=True)
