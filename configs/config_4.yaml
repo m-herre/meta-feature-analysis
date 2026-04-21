@@ -13,18 +13,28 @@ groups:
   tfm:
     config_types: [TABDPT_GPU, TABSTAR, TABICLV2, TABICL_GPU, TABPFNV2_GPU, TABPFN-V2.6, REALTABPFN-V2.5]
     label: "transformer-based"
-  tabpfnv26:
+  tabpfn_old:
+    config_types: [TABPFNV2_GPU]
+    label: "tabpfn-old"
+  tabpfn_new:
     config_types: [TABPFN-V2.6]
-    label: "tabpfnv26"
-  realtabpfnv25:
-    config_types: [REALTABPFN-V2.5]
-    label: "realtabpfnv25"
+    label: "tabpfn-new"
+  tabicl_old:
+    config_types: [TABICL_GPU]
+    label: "tabicl-old"
+  tabicl_new:
+    config_types: [TABICLV2]
+    label: "tabicl-new"
 
 
 comparisons:
-  - name: tabpfnv26_vs_realtabpfnv25
-    group_a: tabpfnv26
-    group_b: realtabpfnv25
+  - name: tabpfn_old_vs_tabicl_old
+    group_a: tabpfn_old
+    group_b: tabicl_old
+    expected_direction: null
+  - name: tabpfn_new_vs_tabicl_new
+    group_a: tabpfn_new
+    group_b: tabicl_new
     expected_direction: null
 
 analysis:
@@ -33,7 +43,7 @@ analysis:
   selection_error_column: metric_error_val
   method_variant: [default, tuned]
   exclude_methods_containing: [AutoGluon]
-  exclude_problem_types: [regression]  # any subset of: regression, binary, multiclass
+  exclude_problem_types: []  # any subset of: regression, binary, multiclass
 
 metafeatures:
   feature_sets:

@@ -1,18 +1,30 @@
 version: 1
 
 groups:
-  foundation:
+  baselines:
+    config_types: [KNN, LR, RF, NN_TORCH, FASTAI]
+    label: "baselines"
+  tree:
+    config_types: [CAT, GBM, XGB, EBM, PB, XT, RF]
+    label: "tree-based"
+  nn:
+    config_types: [FASTAI, MNCA_GPU, NN_TORCH, REALMLP_GPU, TABM_GPU]
+    label: "mlp-based"
+  tfm:
     config_types: [TABDPT_GPU, TABSTAR, TABICLV2, TABICL_GPU, TABPFNV2_GPU, TABPFN-V2.6, REALTABPFN-V2.5]
-    label: "foundation"
-  non_foundation:
-    config_types: [KNN, LR, RF, NN_TORCH, FASTAI, CAT, GBM, XGB, EBM, PB, XT, MNCA_GPU, REALMLP_GPU, TABM_GPU]
-    label: "non-foundation"
+    label: "transformer-based"
+  tabpfnv26:
+    config_types: [TABPFN-V2.6]
+    label: "tabpfnv26"
+  realtabpfnv25:
+    config_types: [REALTABPFN-V2.5]
+    label: "realtabpfnv25"
 
 
 comparisons:
-  - name: foundation_vs_nonfoundation
-    group_a: foundation
-    group_b: non_foundation
+  - name: tabpfnv26_vs_realtabpfnv25
+    group_a: tabpfnv26
+    group_b: realtabpfnv25
     expected_direction: null
 
 analysis:
