@@ -352,6 +352,7 @@ def _process_one_split(
     cache_root: str,
     cache_identity: str,
     use_cache: bool,
+    retry_failed_pymfe: bool,
     trace: bool,
 ) -> tuple[str, int, int, dict[str, Any] | None, bool, bool, bool, int, str | None, dict[str, str]]:
     """Handle one (dataset, repeat, fold).
@@ -380,19 +381,24 @@ def _process_one_split(
                 cached = None
             if cached is not None:
                 cached_row, cached_failed_sets = cached
-                repair_targets = {}
-                if "pymfe" not in cached_failed_sets:
+                pymfe_raw_features_to_repair: tuple[str, ...] = ()
+                if retry_failed_pymfe:
                     pymfe_raw_features = _configured_pymfe_raw_features(
                         feature_sets,
                         pymfe_groups,
                         problem_type=problem_type,
                     )
-                    repair_targets = _pymfe_repair_targets(
-                        cached_row,
-                        raw_features=pymfe_raw_features,
-                        pymfe_summary=pymfe_summary,
-                    )
-                if repair_targets:
+                    if "pymfe" in cached_failed_sets:
+                        pymfe_raw_features_to_repair = pymfe_raw_features
+                    else:
+                        pymfe_raw_features_to_repair = tuple(
+                            _pymfe_repair_targets(
+                                cached_row,
+                                raw_features=pymfe_raw_features,
+                                pymfe_summary=pymfe_summary,
+                            )
+                        )
+                if pymfe_raw_features_to_repair:
                     task = _get_cached_task(task_id)
                     repaired_row, repaired_failed_sets, unrepaired_outputs = _repair_cached_pymfe_split(
                         task,
@@ -405,7 +411,7 @@ def _process_one_split(
                         pymfe_groups=pymfe_groups,
                         pymfe_summary=pymfe_summary,
                         pymfe_per_feature_timeout_s=pymfe_per_feature_timeout_s,
-                        missing_raw_features=tuple(repair_targets),
+                        missing_raw_features=pymfe_raw_features_to_repair,
                         trace=trace,
                     )
                     _write_cached_split(split_path, repaired_row, cache_identity, repaired_failed_sets)
@@ -452,6 +458,7 @@ def build_metafeature_table(
     pymfe_groups: tuple[str, ...] = ("general", "statistical", "info-theory"),
     pymfe_summary: tuple[str, ...] = ("mean", "sd"),
     pymfe_per_feature_timeout_s: float | None = None,
+    retry_failed_pymfe: bool = False,
     trace: bool = False,
     irregularity_components: tuple[str, ...] = DEFAULT_IRREGULARITY_COMPONENTS,
     cache_version: int | None = None,
@@ -529,6 +536,7 @@ def build_metafeature_table(
             cache_root=cache_root,
             cache_identity_payload=cache_identity_payload,
             use_cache=effective_use_cache,
+            retry_failed_pymfe=retry_failed_pymfe,
             overall_start=overall_start,
             trace=trace,
         )
@@ -549,6 +557,7 @@ def build_metafeature_table(
             cache_root=cache_root,
             cache_identity_payload=cache_identity_payload,
             use_cache=effective_use_cache,
+            retry_failed_pymfe=retry_failed_pymfe,
             overall_start=overall_start,
             n_jobs=resolved_n_jobs,
             backend=backend,
@@ -623,6 +632,7 @@ def _build_sequential(
     cache_root: Path,
     cache_identity_payload: dict[str, Any],
     use_cache: bool,
+    retry_failed_pymfe: bool,
     overall_start: float,
     trace: bool,
 ) -> tuple[list[dict[str, Any]], int, int, int, int, dict[str, dict[tuple[str, int, int], str]]]:
@@ -689,19 +699,24 @@ def _build_sequential(
                         cached = None
                     if cached is not None:
                         cached_row, cached_failed_sets = cached
-                        repair_targets = {}
-                        if "pymfe" not in cached_failed_sets:
+                        pymfe_raw_features_to_repair: tuple[str, ...] = ()
+                        if retry_failed_pymfe:
                             pymfe_raw_features = _configured_pymfe_raw_features(
                                 feature_sets,
                                 pymfe_groups,
                                 problem_type=problem_type,
                             )
-                            repair_targets = _pymfe_repair_targets(
-                                cached_row,
-                                raw_features=pymfe_raw_features,
-                                pymfe_summary=pymfe_summary,
-                            )
-                        if repair_targets:
+                            if "pymfe" in cached_failed_sets:
+                                pymfe_raw_features_to_repair = pymfe_raw_features
+                            else:
+                                pymfe_raw_features_to_repair = tuple(
+                                    _pymfe_repair_targets(
+                                        cached_row,
+                                        raw_features=pymfe_raw_features,
+                                        pymfe_summary=pymfe_summary,
+                                    )
+                                )
+                        if pymfe_raw_features_to_repair:
                             repaired_row, cached_failed_sets, unrepaired_outputs = _repair_cached_pymfe_split(
                                 _ensure_task_loaded(),
                                 cached_row,
@@ -713,7 +728,7 @@ def _build_sequential(
                                 pymfe_groups=pymfe_groups,
                                 pymfe_summary=pymfe_summary,
                                 pymfe_per_feature_timeout_s=pymfe_per_feature_timeout_s,
-                                missing_raw_features=tuple(repair_targets),
+                                missing_raw_features=pymfe_raw_features_to_repair,
                                 trace=trace,
                             )
                             _write_cached_split(split_path, repaired_row, split_cache_identity, cached_failed_sets)
@@ -790,6 +805,7 @@ def _build_parallel(
     cache_root: Path,
     cache_identity_payload: dict[str, Any],
     use_cache: bool,
+    retry_failed_pymfe: bool,
     overall_start: float,
     n_jobs: int,
     backend: str,
@@ -925,6 +941,7 @@ def _build_parallel(
                         cache_root_str,
                         cache_identity,
                         use_cache,
+                        retry_failed_pymfe,
                         trace,
                     )
                     for dataset, task_id, repeat, fold, problem_type, cache_identity in pending
@@ -974,6 +991,7 @@ def _build_parallel(
                             cache_root_str,
                             cache_identity,
                             use_cache,
+                            retry_failed_pymfe,
                             trace,
                         )
                     )

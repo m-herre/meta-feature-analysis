@@ -542,6 +542,95 @@ def test_pymfe_failure_provenance_survives_rerun_from_cache(monkeypatch, tmp_pat
     assert any("`pymfe` failed on 1/1 split(s)" in message for message in warnings_second)
 
 
+def test_retry_failed_pymfe_recomputes_failed_cached_split_and_rewrites_cache(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class FailingMFE:
+        def __init__(self, *, groups, summary) -> None:
+            pass
+
+        @classmethod
+        def valid_metafeatures(cls, groups=None):
+            return ("recovered",)
+
+        def fit(self, X, y, cat_cols) -> None:
+            raise RecursionError("maximum recursion depth exceeded")
+
+        def extract(self):
+            raise AssertionError("unreachable")
+
+    pymfe_module = types.ModuleType("pymfe")
+    pymfe_module.__path__ = []
+    mfe_module = types.ModuleType("pymfe.mfe")
+    mfe_module.MFE = FailingMFE
+    pymfe_module.mfe = mfe_module
+    monkeypatch.setitem(sys.modules, "pymfe", pymfe_module)
+    monkeypatch.setitem(sys.modules, "pymfe.mfe", mfe_module)
+
+    class FakeTask:
+        def get_split_dimensions(self) -> tuple[int, int, int]:
+            return 1, 1, 1
+
+        def get_train_test_split(self, *, fold: int, repeat: int):
+            X = pd.DataFrame({"num": [1.0, 2.0, 3.0, 4.0]})
+            y = pd.Series([0, 1, 0, 1])
+            return X, y, X, y
+
+    monkeypatch.setattr(
+        "tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id",
+        lambda task_id: FakeTask(),
+    )
+    metadata = pd.DataFrame({"dataset": ["poisoned"], "tid": [1], "n_repeats": [1], "n_folds": [1]})
+
+    first = build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        feature_sets=("basic", "pymfe"),
+        pymfe_groups=("general",),
+        pymfe_summary=("mean",),
+        n_jobs=1,
+    )
+    assert "pymfe__recovered" not in first.columns
+
+    split_path = metafeature_split_cache_dir(tmp_path) / "poisoned__r0__f0.parquet"
+    failed_cache = pd.read_parquet(split_path)
+    assert '"pymfe"' in failed_cache["_cache_failed_sets"].iat[0]
+
+    class RecoveredMFE:
+        def __init__(self, *, groups, summary, features=None) -> None:
+            self.features = list(features) if features is not None else None
+
+        @classmethod
+        def valid_metafeatures(cls, groups=None):
+            return ("recovered",)
+
+        def fit(self, X, y, cat_cols) -> None:
+            return None
+
+        def extract(self):
+            names = self.features if self.features is not None else ["recovered"]
+            return names, [9.0] * len(names)
+
+    mfe_module.MFE = RecoveredMFE
+    repaired = build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        feature_sets=("basic", "pymfe"),
+        pymfe_groups=("general",),
+        pymfe_summary=("mean",),
+        retry_failed_pymfe=True,
+        n_jobs=1,
+    )
+
+    assert repaired["pymfe__recovered"].iat[0] == 9.0
+    rewritten = pd.read_parquet(split_path)
+    assert rewritten["pymfe__recovered"].iat[0] == 9.0
+    assert rewritten["_cache_failed_sets"].iat[0] == "{}"
+
+
 def test_complete_pymfe_split_cache_hit_does_not_load_task(monkeypatch, tmp_path: Path) -> None:
     class CompleteMFE:
         def __init__(self, *, groups, summary, features=None) -> None:
@@ -602,6 +691,78 @@ def test_complete_pymfe_split_cache_hit_does_not_load_task(monkeypatch, tmp_path
     )
 
     pd.testing.assert_frame_equal(second, first)
+
+
+def test_missing_pymfe_split_cache_cell_reused_without_retry_does_not_load_task(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class CompleteMFE:
+        def __init__(self, *, groups, summary, features=None) -> None:
+            self.features = list(features) if features is not None else None
+
+        @classmethod
+        def valid_metafeatures(cls, groups=None):
+            return ("fast", "slow")
+
+        def fit(self, X, y, cat_cols) -> None:
+            return None
+
+        def extract(self):
+            names = self.features if self.features is not None else ["fast", "slow"]
+            values = [1.0 if name == "fast" else 2.0 for name in names]
+            return names, values
+
+    pymfe_module = types.ModuleType("pymfe")
+    pymfe_module.__path__ = []
+    mfe_module = types.ModuleType("pymfe.mfe")
+    mfe_module.MFE = CompleteMFE
+    pymfe_module.mfe = mfe_module
+    monkeypatch.setitem(sys.modules, "pymfe", pymfe_module)
+    monkeypatch.setitem(sys.modules, "pymfe.mfe", mfe_module)
+
+    class FakeTask:
+        def get_split_dimensions(self) -> tuple[int, int, int]:
+            return 1, 1, 1
+
+        def get_train_test_split(self, *, fold: int, repeat: int):
+            X = pd.DataFrame({"num": [1.0, 2.0, 3.0, 4.0]})
+            y = pd.Series([0, 1, 0, 1])
+            return X, y, X, y
+
+    monkeypatch.setattr("tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id", lambda task_id: FakeTask())
+    metadata = pd.DataFrame({"dataset": ["dataset_a"], "tid": [1], "n_repeats": [1], "n_folds": [1]})
+
+    build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        feature_sets=("basic", "pymfe"),
+        pymfe_groups=("general",),
+        pymfe_summary=("mean",),
+    )
+
+    split_path = metafeature_split_cache_dir(tmp_path) / "dataset_a__r0__f0.parquet"
+    cached = pd.read_parquet(split_path)
+    cached = cached.drop(columns=["pymfe__slow"])
+    cached.to_parquet(split_path, index=False)
+
+    def fail_from_task_id(task_id: int):
+        raise AssertionError("incomplete pymfe split cache should not load the task unless retry is enabled")
+
+    monkeypatch.setattr("tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id", fail_from_task_id)
+    reused = build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        feature_sets=("basic", "pymfe"),
+        pymfe_groups=("general",),
+        pymfe_summary=("mean",),
+    )
+
+    assert reused["pymfe__fast"].iat[0] == 1.0
+    assert "pymfe__slow" not in reused.columns
+    assert "pymfe__slow" not in pd.read_parquet(split_path).columns
 
 
 def test_missing_pymfe_split_cache_cell_repairs_only_missing_raw_feature(monkeypatch, tmp_path: Path) -> None:
@@ -666,6 +827,7 @@ def test_missing_pymfe_split_cache_cell_repairs_only_missing_raw_feature(monkeyp
         feature_sets=("basic", "pymfe"),
         pymfe_groups=("general",),
         pymfe_summary=("mean",),
+        retry_failed_pymfe=True,
     )
 
     row = repaired.iloc[0]
@@ -812,6 +974,7 @@ def test_timeout_increase_reuses_partial_split_cache_and_repairs_missing_pymfe(m
         pymfe_groups=("general",),
         pymfe_summary=("mean",),
         pymfe_per_feature_timeout_s=1.0,
+        retry_failed_pymfe=True,
     )
 
     assert repaired["pymfe__fast"].iat[0] == 1.0

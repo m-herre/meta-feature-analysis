@@ -14,6 +14,7 @@ def test_load_default_config() -> None:
     config = load_config(Path("configs/default.yaml"))
     assert config.analysis.unit == AnalysisUnit.DATASET
     assert config.analysis.selection_error_column == "metric_error_val"
+    assert config.metafeatures.retry_failed_pymfe is False
     assert config.statistics.correlation_method == CorrelationMethod.SPEARMAN
     assert config.comparisons[0].group_a.name == "nn"
     assert config.comparisons[0].group_b.name == "gbdt"
@@ -135,6 +136,18 @@ def test_parse_config_parses_metafeature_trace(config_dict) -> None:
     config_dict["metafeatures"]["trace"] = True
     config = parse_config(config_dict)
     assert config.metafeatures.trace is True
+
+
+def test_parse_config_defaults_retry_failed_pymfe_false(config_dict) -> None:
+    config_dict["metafeatures"].pop("retry_failed_pymfe", None)
+    config = parse_config(config_dict)
+    assert config.metafeatures.retry_failed_pymfe is False
+
+
+def test_parse_config_parses_retry_failed_pymfe(config_dict) -> None:
+    config_dict["metafeatures"]["retry_failed_pymfe"] = True
+    config = parse_config(config_dict)
+    assert config.metafeatures.retry_failed_pymfe is True
 
 
 def test_parse_config_treats_null_metafeature_sequences_as_defaults(config_dict) -> None:

@@ -318,6 +318,7 @@ def run_analysis(
             "feature_sets": config.metafeatures.feature_sets,
             "pymfe_groups": config.metafeatures.pymfe_groups,
             "pymfe_summary": config.metafeatures.pymfe_summary,
+            "retry_failed_pymfe": config.metafeatures.retry_failed_pymfe,
             "irregularity_components": config.metafeatures.irregularity_components,
             "schema_versions": _schema_versions_for_feature_sets(config.metafeatures.feature_sets),
             "problem_types": _metadata_problem_types_payload(metadata, dataset_list),
@@ -332,9 +333,15 @@ def run_analysis(
             "so live per-split diagnostics appear only on cache misses"
         )
     if metafeature_cache_enabled and pymfe_enabled:
-        logger.info(
-            "Stage 2/5 meta-features: pymfe enabled; rebuilding from split cache to allow partial-cache repair"
-        )
+        if config.metafeatures.retry_failed_pymfe:
+            logger.info(
+                "Stage 2/5 meta-features: pymfe enabled; rebuilding from split cache to allow partial-cache repair"
+            )
+        else:
+            logger.info(
+                "Stage 2/5 meta-features: pymfe enabled; rebuilding from split cache and reusing cached "
+                "pymfe failures/incomplete outputs as-is"
+            )
     if metafeature_cache_enabled and not pymfe_enabled:
         metafeature_table = read_dataframe_cache(cache_dir, 2, "metafeatures", metafeature_cache_hash)
         if metafeature_table is not None:
@@ -350,6 +357,7 @@ def run_analysis(
             pymfe_groups=config.metafeatures.pymfe_groups,
             pymfe_summary=config.metafeatures.pymfe_summary,
             pymfe_per_feature_timeout_s=config.metafeatures.pymfe_per_feature_timeout_s,
+            retry_failed_pymfe=config.metafeatures.retry_failed_pymfe,
             trace=config.metafeatures.trace,
             irregularity_components=config.metafeatures.irregularity_components,
             cache_version=config.version,

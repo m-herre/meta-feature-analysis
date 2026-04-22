@@ -205,6 +205,7 @@ One or more pairwise comparisons between groups. `delta_norm = group_a_error - g
 | `pymfe_groups` | list of strings | pymfe feature groups (e.g. `general`, `statistical`, `info-theory`) | `[general, statistical, info-theory]` |
 | `pymfe_summary` | list of strings | pymfe summary functions (e.g. `mean`, `sd`, `min`, `max`) | `[mean, sd]` |
 | `trace` | bool | `true`, `false` | `false` |
+| `retry_failed_pymfe` | bool | `true`, `false` | `false` |
 | `irregularity_components` | list of strings | See below | all five |
 
 Available feature sets:
@@ -226,6 +227,7 @@ Available feature sets:
   outputs above 512 non-constant numeric columns because it builds a full correlation matrix.
 - `pymfe` — requires `pip install -e ".[pymfe]"`; extracts features via the pymfe library
 - `trace: true` — keeps metafeature caches enabled and logs per-split feature-set timings, exact `pymfe` subgroup contents, per-output `pymfe` timings, and captured warning causes on cache misses. For readable ordering, use `parallelism.n_jobs: 1`.
+- `retry_failed_pymfe: true` — when resuming from `.mfa_cache`, retries cached incomplete or previously failed `pymfe` split outputs and rewrites repaired split caches. The default `false` reuses cached split rows as-is.
 
 Categorical handling note:
 - Columns with dtype `object`, pandas `category`, or `bool` are treated as categorical.

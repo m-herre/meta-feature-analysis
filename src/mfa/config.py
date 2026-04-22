@@ -59,6 +59,7 @@ class MetafeatureSettings:
     pymfe_groups: tuple[str, ...] = ("general", "statistical", "info-theory")
     pymfe_summary: tuple[str, ...] = ("mean", "sd")
     pymfe_per_feature_timeout_s: float | None = None
+    retry_failed_pymfe: bool = False
     trace: bool = False
     irregularity_components: tuple[str, ...] = (
         "irreg_min_cov_eig",
@@ -252,6 +253,7 @@ def _parse_metafeatures(raw_metafeatures: Any) -> MetafeatureSettings:
         pymfe_groups=_sequence_value("pymfe_groups", ["general", "statistical", "info-theory"]),
         pymfe_summary=_sequence_value("pymfe_summary", ["mean", "sd"]),
         pymfe_per_feature_timeout_s=pymfe_per_feature_timeout_s,
+        retry_failed_pymfe=bool(mapping.get("retry_failed_pymfe", False)),
         trace=bool(mapping.get("trace", False)),
         irregularity_components=_sequence_value(
             "irregularity_components",
