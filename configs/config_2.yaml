@@ -27,6 +27,7 @@ analysis:
 metafeatures:
   feature_sets: 
     - basic
+    - redundancy
     - pymfe
   pymfe_groups: 
     - statistical

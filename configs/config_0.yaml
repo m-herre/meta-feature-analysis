@@ -33,6 +33,7 @@ analysis:
 metafeatures:
   feature_sets: 
     - basic
+    - redundancy
     - pymfe
   pymfe_groups: 
     - statistical
@@ -88,5 +89,5 @@ cache:
     statistics: true
 
 parallelism:
-  n_jobs: -1
+  n_jobs: 2
   backend: process
