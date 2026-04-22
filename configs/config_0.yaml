@@ -34,17 +34,31 @@ metafeatures:
     - pymfe
   pymfe_groups: 
     - statistical
-    - complexity
+    # - complexity
     - model-based
     - general
-    - clustering
+    # - clustering
     - info-theory
+    - relative
     - landmarking
-    - concept 
-    - itemset
-  pymfe_summary: [mean]
+    # - concept 
+    # - itemset
+  pymfe_summary: 
+    - mean
+    - sd
+    - count
+    - histogram
+    - iq_range
+    - kurtosis
+    - max
+    - median
+    - min
+    - quantiles
+    - range
+    - skewness
   trace: true
-  pymfe_per_feature_timeout_s: 240  # null or omitted → batch mode (unchanged)                                                                                                                                                                                                 
+  pymfe_per_feature_timeout_s: 10  # null or omitted → batch mode (unchanged)   
+  retry_failed_pymfe: false  # set true to repair/retry incomplete or failed cached pymfe split outputs                                                                                                                                                                                              
   irregularity_components:
     - irreg_min_cov_eig
     - irreg_std_skew

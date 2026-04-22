@@ -1,50 +1,64 @@
 version: 1
 
 groups:
-  gbdt:
-    config_types: [CAT, GBM, XGB, PB]
-    label: "GBDT"
-  nn:
-    config_types:
-      - FASTAI
-      - NN_TORCH
-      - REALMLP_GPU
-      - TABM_GPU
-      - MNCA_GPU
-      - MITRA_GPU
-      - TABDPT_GPU
-      - TABSTAR
-      - TABICLV2
-      - TABICL_GPU
-      - TABPFNV2_GPU
-      - TABPFN-V2.6
-      - REALTABPFN-V2.5
-    label: "NN"
+  baselines:
+    config_types: [KNN, LR, RF, NN_TORCH, FASTAI]
+    label: "baselines"
   tree:
-    config_types: [RF, XT, EBM, XRFM_GPU]
-    label: "Tree"
+    config_types: [CAT, GBM, XGB, EBM, PB, XT, RF]
+    label: "tree-based"
+  nn:
+    config_types: [FASTAI, MNCA_GPU, NN_TORCH, REALMLP_GPU, TABM_GPU]
+    label: "mlp-based"
+  tfm:
+    config_types: [TABDPT_GPU, TABSTAR, TABICLV2, TABICL_GPU, TABPFNV2_GPU, TABPFN-V2.6, REALTABPFN-V2.5]
+    label: "transformer-based"
 
 comparisons:
-  - name: nn_vs_gbdt
+  - name: nn_vs_tree
     group_a: nn
-    group_b: gbdt
-    expected_direction: positive
+    group_b: tree
+    expected_direction: null
 
 analysis:
   unit: dataset
   error_column: metric_error
   selection_error_column: metric_error_val
-  method_variant: tuned
+  method_variant: [default, tuned]
   exclude_methods_containing: [AutoGluon]
   exclude_problem_types: []  # any subset of: regression, binary, multiclass
 
 metafeatures:
-  feature_sets: [basic, irregularity]
-  pymfe_groups: [general, statistical, info-theory]
-  pymfe_summary: [mean, sd]
-  trace: false  # set true to log per-split feature timings, pymfe subgroup contents, and warning causes
-  pymfe_per_feature_timeout_s: 120  # null or omitted → batch mode (unchanged)                                                                                                                                                                                                 
-  retry_failed_pymfe: false  # set true to repair/retry incomplete or failed cached pymfe split outputs
+  feature_sets: 
+    - basic
+    - pymfe
+  pymfe_groups: 
+    - statistical
+    # - complexity
+    - model-based
+    - general
+    # - clustering
+    - info-theory
+    - relative
+    - landmarking
+    # - concept 
+    # - itemset
+  pymfe_summary: 
+    - mean
+    - sd
+    - count
+    - histogram
+    - iq_range
+    - kurtosis
+    - max
+    - median
+    - min
+    - quantiles
+    - range
+    - skewness
+  trace: true
+  pymfe_per_feature_timeout_s: 10  # null or omitted → batch mode (unchanged)   
+  retry_failed_pymfe: false  # set true to repair/retry incomplete or failed cached pymfe split outputs                                                                                                                                                                                              
   irregularity_components:
     - irreg_min_cov_eig
     - irreg_std_skew
@@ -72,5 +86,5 @@ cache:
     statistics: true
 
 parallelism:
-  n_jobs: 1        # -1 = all CPUs, 1 = sequential, N = use N workers
-  backend: process # "process" or "thread"
+  n_jobs: 1
+  backend: process
