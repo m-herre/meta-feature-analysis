@@ -1,18 +1,19 @@
+# Performance Gap TabICL New vs TabPFN New
+
 version: 1
 
 groups:
-  foundation:
-    config_types: [TABDPT_GPU, TABSTAR, TABICLV2, TABICL_GPU, TABPFNV2_GPU, TABPFN-V2.6, REALTABPFN-V2.5]
-    label: "foundation"
-  non_foundation:
-    config_types: [KNN, LR, RF, NN_TORCH, FASTAI, CAT, GBM, XGB, EBM, PB, XT, MNCA_GPU, REALMLP_GPU, TABM_GPU]
-    label: "non-foundation"
-
+  tabicl_new:
+    config_types: [TABICLV2]
+    label: "TabICL new"
+  tabpfn_new:
+    config_types: [TABPFN-V2.6]
+    label: "TabPFN new"
 
 comparisons:
-  - name: foundation_vs_nonfoundation
-    group_a: foundation
-    group_b: non_foundation
+  - name: tabicl_new_vs_tabpfn_new
+    group_a: tabicl_new
+    group_b: tabpfn_new
     expected_direction: null
 
 analysis:
@@ -24,22 +25,36 @@ analysis:
   exclude_problem_types: []  # any subset of: regression, binary, multiclass
 
 metafeatures:
-  feature_sets:
+  feature_sets: 
     - basic
     - pymfe
-  pymfe_groups:
+  pymfe_groups: 
     - statistical
-    - complexity
+    # - complexity
     - model-based
     - general
-    - clustering
+    # - clustering
     - info-theory
+    - relative
     - landmarking
-    - concept
-    - itemset
-  pymfe_summary: [mean]
+    # - concept 
+    # - itemset
+  pymfe_summary: 
+    - mean
+    - sd
+    - count
+    - histogram
+    - iq_range
+    - kurtosis
+    - max
+    - median
+    - min
+    - quantiles
+    - range
+    - skewness
   trace: true
-  pymfe_per_feature_timeout_s: 240  # null or omitted → batch mode (unchanged)
+  pymfe_per_feature_timeout_s: 480 # null or omitted → batch mode (unchanged)   
+  retry_failed_pymfe: false  # set true to repair/retry incomplete or failed cached pymfe split outputs                                                                                                                                                                                              
   irregularity_components:
     - irreg_min_cov_eig
     - irreg_std_skew

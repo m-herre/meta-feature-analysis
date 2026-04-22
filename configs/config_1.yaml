@@ -1,30 +1,19 @@
+# Performance gap transformer-based vs standard methods
+
 version: 1
 
 groups:
-  baselines:
-    config_types: [KNN, LR, RF, NN_TORCH, FASTAI]
-    label: "baselines"
-  tree:
-    config_types: [CAT, GBM, XGB, EBM, PB, XT, RF]
-    label: "tree-based"
-  nn:
-    config_types: [FASTAI, MNCA_GPU, NN_TORCH, REALMLP_GPU, TABM_GPU]
-    label: "mlp-based"
-  tfm:
+  non-foundational:
+    config_types: [FASTAI, MNCA_GPU, NN_TORCH, REALMLP_GPU, TABM_GPU, CAT, GBM, XGB, EBM, PB, XT, KNN, LR, RF]
+    label: "standard"
+  foundational:
     config_types: [TABDPT_GPU, TABSTAR, TABICLV2, TABICL_GPU, TABPFNV2_GPU, TABPFN-V2.6, REALTABPFN-V2.5]
     label: "transformer-based"
-  tabpfnv2:
-    config_types: [TABPFNV2_GPU]
-    label: "tabpfnv2"
-  tabpfnv26:
-    config_types: [TABPFN-V2.6]
-    label: "tabpfnv26"
-  
 
 comparisons:
-  - name: tabpfn_old_vs_new
-    group_a: tabpfnv2
-    group_b: tabpfnv26
+  - name: non_foundational_vs_foundational
+    group_a: non-foundational
+    group_b: foundational
     expected_direction: null
 
 analysis:
@@ -41,17 +30,31 @@ metafeatures:
     - pymfe
   pymfe_groups: 
     - statistical
-    - complexity
+    # - complexity
     - model-based
     - general
-    - clustering
+    # - clustering
     - info-theory
+    - relative
     - landmarking
-    - concept 
-    - itemset
-  pymfe_summary: [mean]
+    # - concept 
+    # - itemset
+  pymfe_summary: 
+    - mean
+    - sd
+    - count
+    - histogram
+    - iq_range
+    - kurtosis
+    - max
+    - median
+    - min
+    - quantiles
+    - range
+    - skewness
   trace: true
-  pymfe_per_feature_timeout_s: 240  # null or omitted → batch mode (unchanged)                                                                                                                                                                                                 
+  pymfe_per_feature_timeout_s: 480 # null or omitted → batch mode (unchanged)   
+  retry_failed_pymfe: false  # set true to repair/retry incomplete or failed cached pymfe split outputs                                                                                                                                                                                              
   irregularity_components:
     - irreg_min_cov_eig
     - irreg_std_skew

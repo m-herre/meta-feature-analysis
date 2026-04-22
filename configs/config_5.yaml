@@ -1,23 +1,19 @@
+# Performance Gap TabICL Old vs TabICL New
+
 version: 1
 
 groups:
-  baselines:
-    config_types: [KNN, LR, RF, NN_TORCH, FASTAI]
-    label: "baselines"
-  tree:
-    config_types: [CAT, GBM, XGB, EBM, PB, XT, RF]
-    label: "tree-based"
-  nn:
-    config_types: [FASTAI, MNCA_GPU, NN_TORCH, REALMLP_GPU, TABM_GPU]
-    label: "mlp-based"
-  tfm:
-    config_types: [TABDPT_GPU, TABSTAR, TABICLV2, TABICL_GPU, TABPFNV2_GPU, TABPFN-V2.6, REALTABPFN-V2.5]
-    label: "transformer-based"
+  tabicl_old:
+    config_types: [TABICL_GPU]
+    label: "TabICL old"
+  tabicl_new:
+    config_types: [TABICLV2]
+    label: "TabICL new"
 
 comparisons:
-  - name: nn_vs_tree
-    group_a: nn
-    group_b: tree
+  - name: tabicl_old_vs_new
+    group_a: tabicl_old
+    group_b: tabicl_new
     expected_direction: null
 
 analysis:
@@ -57,7 +53,7 @@ metafeatures:
     - range
     - skewness
   trace: true
-  pymfe_per_feature_timeout_s: 10  # null or omitted → batch mode (unchanged)   
+  pymfe_per_feature_timeout_s: 480 # null or omitted → batch mode (unchanged)   
   retry_failed_pymfe: false  # set true to repair/retry incomplete or failed cached pymfe split outputs                                                                                                                                                                                              
   irregularity_components:
     - irreg_min_cov_eig
@@ -86,5 +82,5 @@ cache:
     statistics: true
 
 parallelism:
-  n_jobs: 1
+  n_jobs: -1
   backend: process
