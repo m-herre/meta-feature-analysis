@@ -156,6 +156,64 @@ def test_run_analysis_reuses_metafeature_cache_when_trace_enabled(
     assert metafeature_calls["count"] == 1
 
 
+def test_run_analysis_bypasses_metafeature_table_cache_when_pymfe_enabled(
+    analysis_config,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = replace(
+        analysis_config,
+        cache=replace(analysis_config.cache, enabled=True, directory=tmp_path),
+        metafeatures=replace(analysis_config.metafeatures, feature_sets=("basic", "pymfe")),
+    )
+    raw_results = pd.DataFrame(
+        {
+            "dataset": ["dataset_a", "dataset_a", "dataset_b", "dataset_b"],
+            "fold": [0, 0, 0, 0],
+            "method": ["nn_alpha", "gbdt_alpha", "nn_alpha", "gbdt_alpha"],
+            "metric_error": [0.20, 0.10, 0.18, 0.12],
+            "metric_error_val": [0.21, 0.11, 0.19, 0.13],
+            "config_type": ["NN_A", "GBDT_A", "NN_A", "GBDT_A"],
+            "method_subtype": ["tuned", "tuned", "tuned", "tuned"],
+        }
+    )
+    metafeatures = pd.DataFrame(
+        {
+            "dataset": ["dataset_a", "dataset_b"],
+            "repeat": [0, 0],
+            "fold": [0, 0],
+            "log_n": [2.0, 2.2],
+            "n_over_d": [10.0, 12.0],
+            "pymfe__nr_attr": [3.0, 4.0],
+        }
+    )
+    task_metadata = pd.DataFrame({"dataset": ["dataset_a", "dataset_b"], "tid": [1, 2]})
+    context = FakeTabArenaContext(raw_results)
+    metafeature_calls = {"count": 0}
+
+    def fake_build_metafeature_table(*args, **kwargs) -> pd.DataFrame:
+        metafeature_calls["count"] += 1
+        return metafeatures.copy()
+
+    monkeypatch.setattr("mfa.pipeline.build_metafeature_table", fake_build_metafeature_table)
+
+    run_analysis(
+        config,
+        datasets=["dataset_a", "dataset_b"],
+        task_metadata=task_metadata,
+        tabarena_context=context,
+    )
+    run_analysis(
+        config,
+        datasets=["dataset_a", "dataset_b"],
+        task_metadata=task_metadata,
+        tabarena_context=context,
+    )
+
+    assert context.calls == 1
+    assert metafeature_calls["count"] == 2
+
+
 def test_run_analysis_accepts_string_method_variant_override(
     analysis_config,
     monkeypatch,

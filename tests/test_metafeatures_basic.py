@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from mfa.cache import metafeature_split_cache_dir
 from mfa.metafeatures import build_metafeature_table
 from mfa.metafeatures.basic import compute_basic_metafeatures
 from mfa.metafeatures.redundancy import compute_redundancy_metafeatures
@@ -349,6 +350,66 @@ def test_build_metafeature_table_trace_reuses_split_cache(
     traced = build_metafeature_table(metadata, cache_dir=tmp_path, use_cache=True, cache_version=1, trace=True)
 
     pd.testing.assert_frame_equal(traced, first)
+
+
+def test_build_metafeature_table_recomputes_corrupt_split_cache(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    metadata = pd.DataFrame(
+        {
+            "dataset": ["dataset_a"],
+            "tid": [1],
+            "n_repeats": [1],
+            "n_folds": [1],
+        }
+    )
+    task_sizes = iter([3, 4])
+
+    class FakeTask:
+        def __init__(self, n_rows: int) -> None:
+            self.n_rows = n_rows
+
+        def get_split_dimensions(self) -> tuple[int, int, int]:
+            return 1, 1, 1
+
+        def get_train_test_split(self, *, fold: int, repeat: int):
+            X = pd.DataFrame({"num": np.arange(self.n_rows, dtype=float)})
+            y = pd.Series(np.zeros(self.n_rows, dtype=int))
+            return X, y, X, y
+
+    monkeypatch.setattr(
+        "tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id",
+        lambda task_id: FakeTask(next(task_sizes)),
+    )
+
+    first = build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        cache_version=1,
+        feature_sets=("basic",),
+    )
+    assert first["n"].iat[0] == 3
+
+    split_path = metafeature_split_cache_dir(tmp_path) / "dataset_a__r0__f0.parquet"
+    split_path.write_text("not a parquet file", encoding="utf-8")
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "mfa.metafeatures.logger.warning",
+        lambda message, *args: warnings.append(message % args if args else message),
+    )
+
+    second = build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        cache_version=1,
+        feature_sets=("basic",),
+    )
+
+    assert second["n"].iat[0] == 4
+    assert any("split cache" in message and "unreadable" in message for message in warnings)
 
 
 def test_build_metafeature_table_logs_dataset_progress(

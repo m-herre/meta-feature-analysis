@@ -19,6 +19,7 @@ from .irregularity import (
     IRREGULARITY_PROXY_SCHEMA_VERSION,
 )
 from .pymfe_catalog import PYMFE_FILTER_SCHEMA_VERSION
+from .pymfe_features import enumerate_pymfe_raw_features
 from .redundancy import REDUNDANCY_METAFEATURE_SCHEMA_VERSION
 from .registry import extract_requested_metafeatures
 
@@ -135,6 +136,140 @@ def _read_cached_split(split_path: Path, cache_identity: str) -> tuple[dict[str,
     return row, cached_failed_sets
 
 
+def _write_cached_split(
+    split_path: Path,
+    split_row: dict[str, Any],
+    cache_identity: str,
+    failed_sets: dict[str, str],
+) -> None:
+    split_path.parent.mkdir(parents=True, exist_ok=True)
+    frame = pd.DataFrame(
+        [
+            {
+                **split_row,
+                SPLIT_CACHE_HASH_COLUMN: cache_identity,
+                SPLIT_CACHE_FAILED_SETS_COLUMN: _encode_failed_sets(failed_sets),
+            }
+        ]
+    )
+    frame.to_parquet(split_path, index=False)
+
+
+def _pymfe_raw_feature_from_column(column: str, pymfe_summary: tuple[str, ...]) -> str | None:
+    if not column.startswith("pymfe__"):
+        return None
+    name = column.removeprefix("pymfe__")
+    for summary in sorted(pymfe_summary, key=len, reverse=True):
+        suffix = f".{summary}"
+        if name.endswith(suffix) and len(name) > len(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def _has_pymfe_summary_suffix(column: str, pymfe_summary: tuple[str, ...]) -> bool:
+    if not column.startswith("pymfe__"):
+        return False
+    name = column.removeprefix("pymfe__")
+    return any(name.endswith(f".{summary}") and len(name) > len(summary) + 1 for summary in pymfe_summary)
+
+
+def _pymfe_repair_targets(
+    cached_row: dict[str, Any],
+    *,
+    raw_features: tuple[str, ...],
+    pymfe_summary: tuple[str, ...],
+) -> dict[str, tuple[str, ...]]:
+    """Map missing Pymfe output columns in a cached row back to raw features."""
+    columns_by_raw_feature: dict[str, list[str]] = {}
+    for column in cached_row:
+        raw_feature = _pymfe_raw_feature_from_column(column, pymfe_summary)
+        if raw_feature is not None:
+            columns_by_raw_feature.setdefault(raw_feature, []).append(column)
+
+    targets: dict[str, tuple[str, ...]] = {}
+    for raw_feature in raw_features:
+        columns = columns_by_raw_feature.get(raw_feature, [])
+        if not columns:
+            targets[raw_feature] = (f"pymfe__{raw_feature}",)
+            continue
+
+        summary_columns = [column for column in columns if _has_pymfe_summary_suffix(column, pymfe_summary)]
+        if summary_columns:
+            expected_columns = tuple(f"pymfe__{raw_feature}.{summary}" for summary in pymfe_summary)
+            missing_columns = tuple(column for column in expected_columns if column not in cached_row)
+            if missing_columns:
+                targets[raw_feature] = missing_columns
+            continue
+
+    return targets
+
+
+def _configured_pymfe_raw_features(
+    feature_sets: tuple[str, ...],
+    pymfe_groups: tuple[str, ...],
+    *,
+    problem_type: str | None,
+) -> tuple[str, ...]:
+    if "pymfe" not in feature_sets:
+        return ()
+    return enumerate_pymfe_raw_features(pymfe_groups, problem_type=problem_type)
+
+
+def _repair_cached_pymfe_split(
+    task,
+    cached_row: dict[str, Any],
+    cached_failed_sets: dict[str, str],
+    *,
+    dataset: str,
+    repeat: int,
+    fold: int,
+    problem_type: str | None,
+    pymfe_groups: tuple[str, ...],
+    pymfe_summary: tuple[str, ...],
+    pymfe_per_feature_timeout_s: float | None,
+    missing_raw_features: tuple[str, ...],
+    trace: bool,
+) -> tuple[dict[str, Any], dict[str, str], int]:
+    repaired_row, repair_failed_sets = extract_split_metafeatures(
+        task,
+        dataset,
+        repeat,
+        fold,
+        problem_type=problem_type,
+        feature_sets=("pymfe",),
+        pymfe_groups=pymfe_groups,
+        pymfe_summary=pymfe_summary,
+        pymfe_per_feature_timeout_s=pymfe_per_feature_timeout_s,
+        pymfe_raw_features=missing_raw_features,
+        trace=trace,
+    )
+
+    merged_row = dict(cached_row)
+    for column, value in repaired_row.items():
+        if column.startswith("pymfe__"):
+            merged_row[column] = value
+
+    merged_failed_sets = dict(cached_failed_sets)
+    if repair_failed_sets:
+        merged_failed_sets.update(repair_failed_sets)
+    else:
+        remaining_targets = _pymfe_repair_targets(
+            merged_row,
+            raw_features=missing_raw_features,
+            pymfe_summary=pymfe_summary,
+        )
+        if not remaining_targets:
+            merged_failed_sets.pop("pymfe", None)
+
+    remaining_targets = _pymfe_repair_targets(
+        merged_row,
+        raw_features=missing_raw_features,
+        pymfe_summary=pymfe_summary,
+    )
+    unrepaired_outputs = sum(len(columns) for columns in remaining_targets.values())
+    return merged_row, merged_failed_sets, unrepaired_outputs
+
+
 def extract_split_metafeatures(
     task,
     dataset: str,
@@ -146,6 +281,7 @@ def extract_split_metafeatures(
     pymfe_groups: tuple[str, ...] = ("general", "statistical", "info-theory"),
     pymfe_summary: tuple[str, ...] = ("mean", "sd"),
     pymfe_per_feature_timeout_s: float | None = None,
+    pymfe_raw_features: tuple[str, ...] | None = None,
     trace: bool = False,
 ) -> tuple[dict[str, float], dict[str, str]]:
     """Compute all configured meta-features for one train split.
@@ -167,6 +303,7 @@ def extract_split_metafeatures(
         pymfe_groups=pymfe_groups,
         pymfe_summary=pymfe_summary,
         pymfe_per_feature_timeout_s=pymfe_per_feature_timeout_s,
+        pymfe_raw_features=pymfe_raw_features,
         trace=trace,
         trace_label=_split_trace_label(dataset, repeat, fold),
     )
@@ -216,10 +353,11 @@ def _process_one_split(
     cache_identity: str,
     use_cache: bool,
     trace: bool,
-) -> tuple[str, int, int, dict[str, float] | None, bool, bool, str | None, dict[str, str]]:
+) -> tuple[str, int, int, dict[str, Any] | None, bool, bool, bool, int, str | None, dict[str, str]]:
     """Handle one (dataset, repeat, fold).
 
-    Returns (dataset, repeat, fold, row, was_cached, was_computed, error, failed_sets).
+    Returns (dataset, repeat, fold, row, was_cached, was_computed, was_repaired,
+    unrepaired_pymfe_outputs, error, failed_sets).
     `error` is only set for unrecoverable failures (e.g. task load). Per-feature-set
     extraction errors are reported via `failed_sets` and do not invalidate the split.
     """
@@ -227,10 +365,63 @@ def _process_one_split(
         cache_path = Path(cache_root)
         split_path = _split_cache_path(cache_path, dataset, repeat, fold)
         if use_cache and split_path.exists():
-            cached = _read_cached_split(split_path, cache_identity)
+            try:
+                cached = _read_cached_split(split_path, cache_identity)
+            except Exception as exc:
+                logger.warning(
+                    "Meta-features %s r%d f%d: split cache `%s` is unreadable (%s: %s); recomputing split",
+                    dataset,
+                    repeat,
+                    fold,
+                    split_path,
+                    type(exc).__name__,
+                    exc,
+                )
+                cached = None
             if cached is not None:
                 cached_row, cached_failed_sets = cached
-                return dataset, repeat, fold, cached_row, True, False, None, cached_failed_sets
+                repair_targets = {}
+                if "pymfe" not in cached_failed_sets:
+                    pymfe_raw_features = _configured_pymfe_raw_features(
+                        feature_sets,
+                        pymfe_groups,
+                        problem_type=problem_type,
+                    )
+                    repair_targets = _pymfe_repair_targets(
+                        cached_row,
+                        raw_features=pymfe_raw_features,
+                        pymfe_summary=pymfe_summary,
+                    )
+                if repair_targets:
+                    task = _get_cached_task(task_id)
+                    repaired_row, repaired_failed_sets, unrepaired_outputs = _repair_cached_pymfe_split(
+                        task,
+                        cached_row,
+                        cached_failed_sets,
+                        dataset=dataset,
+                        repeat=repeat,
+                        fold=fold,
+                        problem_type=problem_type,
+                        pymfe_groups=pymfe_groups,
+                        pymfe_summary=pymfe_summary,
+                        pymfe_per_feature_timeout_s=pymfe_per_feature_timeout_s,
+                        missing_raw_features=tuple(repair_targets),
+                        trace=trace,
+                    )
+                    _write_cached_split(split_path, repaired_row, cache_identity, repaired_failed_sets)
+                    return (
+                        dataset,
+                        repeat,
+                        fold,
+                        repaired_row,
+                        False,
+                        False,
+                        True,
+                        unrepaired_outputs,
+                        None,
+                        repaired_failed_sets,
+                    )
+                return dataset, repeat, fold, cached_row, True, False, False, 0, None, cached_failed_sets
         task = _get_cached_task(task_id)
         split_row, failed_sets = extract_split_metafeatures(
             task,
@@ -245,20 +436,10 @@ def _process_one_split(
             trace=trace,
         )
         if use_cache:
-            split_path.parent.mkdir(parents=True, exist_ok=True)
-            frame = pd.DataFrame(
-                [
-                    {
-                        **split_row,
-                        SPLIT_CACHE_HASH_COLUMN: cache_identity,
-                        SPLIT_CACHE_FAILED_SETS_COLUMN: _encode_failed_sets(failed_sets),
-                    }
-                ]
-            )
-            frame.to_parquet(split_path, index=False)
-        return dataset, repeat, fold, split_row, False, True, None, failed_sets
+            _write_cached_split(split_path, split_row, cache_identity, failed_sets)
+        return dataset, repeat, fold, split_row, False, True, False, 0, None, failed_sets
     except Exception as exc:
-        return dataset, repeat, fold, None, False, False, f"{type(exc).__name__}: {exc}", {}
+        return dataset, repeat, fold, None, False, False, False, 0, f"{type(exc).__name__}: {exc}", {}
 
 
 def build_metafeature_table(
@@ -286,7 +467,6 @@ def build_metafeature_table(
         "feature_sets": feature_sets,
         "pymfe_groups": pymfe_groups,
         "pymfe_summary": pymfe_summary,
-        "pymfe_per_feature_timeout_s": pymfe_per_feature_timeout_s,
         "irregularity_components": irregularity_components,
         "schema_versions": _schema_versions_for_feature_sets(feature_sets),
         "cache_version": cache_version,
@@ -333,7 +513,14 @@ def build_metafeature_table(
         )
 
     if resolved_n_jobs <= 1:
-        rows, total_cached_splits, total_computed_splits, failed_feature_sets = _build_sequential(
+        (
+            rows,
+            total_cached_splits,
+            total_repaired_splits,
+            total_recomputed_splits,
+            total_unrepaired_pymfe_outputs,
+            failed_feature_sets,
+        ) = _build_sequential(
             dataset_tasks=dataset_tasks,
             feature_sets=feature_sets,
             pymfe_groups=pymfe_groups,
@@ -346,7 +533,14 @@ def build_metafeature_table(
             trace=trace,
         )
     else:
-        rows, total_cached_splits, total_computed_splits, failed_feature_sets = _build_parallel(
+        (
+            rows,
+            total_cached_splits,
+            total_repaired_splits,
+            total_recomputed_splits,
+            total_unrepaired_pymfe_outputs,
+            failed_feature_sets,
+        ) = _build_parallel(
             dataset_tasks=dataset_tasks,
             feature_sets=feature_sets,
             pymfe_groups=pymfe_groups,
@@ -365,11 +559,14 @@ def build_metafeature_table(
     if not metafeature_table.empty:
         metafeature_table = metafeature_table.sort_values(["dataset", "repeat", "fold"]).reset_index(drop=True)
     logger.info(
-        "Meta-features: complete in %s (%d rows; %d cached split(s), %d computed split(s))",
+        "Meta-features: complete in %s (%d rows; %d cached split(s), %d repaired split(s), "
+        "%d recomputed split(s), %d unrepaired pymfe output(s))",
         _format_elapsed(time.perf_counter() - overall_start),
         len(metafeature_table),
         total_cached_splits,
-        total_computed_splits,
+        total_repaired_splits,
+        total_recomputed_splits,
+        total_unrepaired_pymfe_outputs,
     )
 
     _log_failed_feature_sets(failed_feature_sets, total_splits=len(metafeature_table))
@@ -428,11 +625,13 @@ def _build_sequential(
     use_cache: bool,
     overall_start: float,
     trace: bool,
-) -> tuple[list[dict[str, float]], int, int, dict[str, dict[tuple[str, int, int], str]]]:
+) -> tuple[list[dict[str, Any]], int, int, int, int, dict[str, dict[tuple[str, int, int], str]]]:
     """Sequential per-dataset processing (original behavior)."""
-    rows: list[dict[str, float]] = []
+    rows: list[dict[str, Any]] = []
     total_cached_splits = 0
-    total_computed_splits = 0
+    total_repaired_splits = 0
+    total_recomputed_splits = 0
+    total_unrepaired_pymfe_outputs = 0
     total_datasets = len(dataset_tasks)
     failed_feature_sets: dict[str, dict[tuple[str, int, int], str]] = {}
     for dataset_index, (dataset, task_id, n_repeats, n_folds, problem_type) in enumerate(dataset_tasks, start=1):
@@ -447,7 +646,9 @@ def _build_sequential(
                 raise ValueError("Expected exactly one sample per (repeat, fold) split.")
         n_splits = n_repeats * n_folds
         dataset_cached_splits = 0
-        dataset_computed_splits = 0
+        dataset_repaired_splits = 0
+        dataset_recomputed_splits = 0
+        dataset_unrepaired_pymfe_outputs = 0
         logger.info(
             "Meta-features [%d/%d] %s: starting (%d split(s); elapsed %s)",
             dataset_index,
@@ -457,28 +658,77 @@ def _build_sequential(
             _format_elapsed(time.perf_counter() - overall_start),
         )
         dataset_start = time.perf_counter()
+
+        def _ensure_task_loaded(task_id=task_id):
+            nonlocal task
+            if task is None:
+                from tabarena.benchmark.task.openml import OpenMLTaskWrapper
+
+                task = OpenMLTaskWrapper.from_task_id(task_id)
+                _, _, n_samples = task.get_split_dimensions()
+                if n_samples != 1:
+                    raise ValueError("Expected exactly one sample per (repeat, fold) split.")
+            return task
+
         for repeat in range(n_repeats):
             for fold in range(n_folds):
                 split_path = _split_cache_path(cache_root, dataset, repeat, fold)
                 if use_cache and split_path.exists():
-                    cached = _read_cached_split(split_path, split_cache_identity)
+                    try:
+                        cached = _read_cached_split(split_path, split_cache_identity)
+                    except Exception as exc:
+                        logger.warning(
+                            "Meta-features %s r%d f%d: split cache `%s` is unreadable (%s: %s); recomputing split",
+                            dataset,
+                            repeat,
+                            fold,
+                            split_path,
+                            type(exc).__name__,
+                            exc,
+                        )
+                        cached = None
                     if cached is not None:
                         cached_row, cached_failed_sets = cached
-                        rows.append(cached_row)
-                        dataset_cached_splits += 1
+                        repair_targets = {}
+                        if "pymfe" not in cached_failed_sets:
+                            pymfe_raw_features = _configured_pymfe_raw_features(
+                                feature_sets,
+                                pymfe_groups,
+                                problem_type=problem_type,
+                            )
+                            repair_targets = _pymfe_repair_targets(
+                                cached_row,
+                                raw_features=pymfe_raw_features,
+                                pymfe_summary=pymfe_summary,
+                            )
+                        if repair_targets:
+                            repaired_row, cached_failed_sets, unrepaired_outputs = _repair_cached_pymfe_split(
+                                _ensure_task_loaded(),
+                                cached_row,
+                                cached_failed_sets,
+                                dataset=dataset,
+                                repeat=repeat,
+                                fold=fold,
+                                problem_type=problem_type,
+                                pymfe_groups=pymfe_groups,
+                                pymfe_summary=pymfe_summary,
+                                pymfe_per_feature_timeout_s=pymfe_per_feature_timeout_s,
+                                missing_raw_features=tuple(repair_targets),
+                                trace=trace,
+                            )
+                            _write_cached_split(split_path, repaired_row, split_cache_identity, cached_failed_sets)
+                            rows.append(repaired_row)
+                            dataset_repaired_splits += 1
+                            dataset_unrepaired_pymfe_outputs += unrepaired_outputs
+                        else:
+                            rows.append(cached_row)
+                            dataset_cached_splits += 1
                         for set_name, err in cached_failed_sets.items():
                             failed_feature_sets.setdefault(set_name, {})[(dataset, repeat, fold)] = err
                         continue
 
-                if task is None:
-                    from tabarena.benchmark.task.openml import OpenMLTaskWrapper
-
-                    task = OpenMLTaskWrapper.from_task_id(task_id)
-                    _, _, n_samples = task.get_split_dimensions()
-                    if n_samples != 1:
-                        raise ValueError("Expected exactly one sample per (repeat, fold) split.")
                 split_row, split_failed_sets = extract_split_metafeatures(
-                    task,
+                    _ensure_task_loaded(),
                     dataset,
                     repeat,
                     fold,
@@ -500,32 +750,34 @@ def _build_sequential(
                         err,
                     )
                 rows.append(split_row)
-                dataset_computed_splits += 1
+                dataset_recomputed_splits += 1
                 if use_cache:
-                    split_path.parent.mkdir(parents=True, exist_ok=True)
-                    cached_row = pd.DataFrame(
-                        [
-                            {
-                                **split_row,
-                                SPLIT_CACHE_HASH_COLUMN: split_cache_identity,
-                                SPLIT_CACHE_FAILED_SETS_COLUMN: _encode_failed_sets(split_failed_sets),
-                            }
-                        ]
-                    )
-                    cached_row.to_parquet(split_path, index=False)
+                    _write_cached_split(split_path, split_row, split_cache_identity, split_failed_sets)
         total_cached_splits += dataset_cached_splits
-        total_computed_splits += dataset_computed_splits
+        total_repaired_splits += dataset_repaired_splits
+        total_recomputed_splits += dataset_recomputed_splits
+        total_unrepaired_pymfe_outputs += dataset_unrepaired_pymfe_outputs
         logger.info(
-            "Meta-features [%d/%d] %s: done in %s (%d cached, %d computed; total elapsed %s)",
+            "Meta-features [%d/%d] %s: done in %s (%d cached, %d repaired, %d recomputed, "
+            "%d unrepaired pymfe output(s); total elapsed %s)",
             dataset_index,
             total_datasets,
             dataset,
             _format_elapsed(time.perf_counter() - dataset_start),
             dataset_cached_splits,
-            dataset_computed_splits,
+            dataset_repaired_splits,
+            dataset_recomputed_splits,
+            dataset_unrepaired_pymfe_outputs,
             _format_elapsed(time.perf_counter() - overall_start),
         )
-    return rows, total_cached_splits, total_computed_splits, failed_feature_sets
+    return (
+        rows,
+        total_cached_splits,
+        total_repaired_splits,
+        total_recomputed_splits,
+        total_unrepaired_pymfe_outputs,
+        failed_feature_sets,
+    )
 
 
 def _build_parallel(
@@ -542,7 +794,7 @@ def _build_parallel(
     n_jobs: int,
     backend: str,
     trace: bool,
-) -> tuple[list[dict[str, float]], int, int, dict[str, dict[tuple[str, int, int], str]]]:
+) -> tuple[list[dict[str, Any]], int, int, int, int, dict[str, dict[tuple[str, int, int], str]]]:
     """Parallel per-split processing: one future per (dataset, repeat, fold).
 
     Finer granularity than per-dataset keeps the process pool saturated even
@@ -579,10 +831,12 @@ def _build_parallel(
 
     total_splits = len(split_units)
     total_cached = 0
-    total_computed = 0
+    total_repaired = 0
+    total_recomputed = 0
+    total_unrepaired_pymfe_outputs = 0
     failed: list[tuple[str, int, int, str]] = []
     failed_feature_sets: dict[str, dict[tuple[str, int, int], str]] = {}
-    rows_by_dataset: dict[str, list[dict[str, float]]] = {dataset: [] for dataset, *_ in dataset_tasks}
+    rows_by_dataset: dict[str, list[dict[str, Any]]] = {dataset: [] for dataset, *_ in dataset_tasks}
 
     try:
         from tqdm import tqdm
@@ -602,8 +856,19 @@ def _build_parallel(
     progress = tqdm(total=total_splits, desc="Meta-features", unit="split") if has_tqdm else None
 
     def _record(result_tuple: tuple) -> None:
-        nonlocal total_cached, total_computed
-        dataset_r, repeat_r, fold_r, row, was_cached, was_computed, error, split_failed_sets = result_tuple
+        nonlocal total_cached, total_repaired, total_recomputed, total_unrepaired_pymfe_outputs
+        (
+            dataset_r,
+            repeat_r,
+            fold_r,
+            row,
+            was_cached,
+            was_computed,
+            was_repaired,
+            unrepaired_outputs,
+            error,
+            split_failed_sets,
+        ) = result_tuple
         completed_keys.add((dataset_r, repeat_r, fold_r))
         if progress is not None:
             progress.update(1)
@@ -625,7 +890,10 @@ def _build_parallel(
         if was_cached:
             total_cached += 1
         if was_computed:
-            total_computed += 1
+            total_recomputed += 1
+        if was_repaired:
+            total_repaired += 1
+            total_unrepaired_pymfe_outputs += unrepaired_outputs
 
     # A BrokenProcessPool (commonly an OOM-killed worker) poisons every
     # pending future in the executor, so a single bad split would
@@ -725,10 +993,17 @@ def _build_parallel(
         summary = "; ".join(f"{d} r{r} f{f}: {err}" for d, r, f, err in failed)
         raise RuntimeError(f"Meta-feature extraction failed for {len(failed)}/{total_splits} split(s): {summary}")
 
-    rows: list[dict[str, float]] = []
+    rows: list[dict[str, Any]] = []
     for dataset_rows in rows_by_dataset.values():
         rows.extend(dataset_rows)
-    return rows, total_cached, total_computed, failed_feature_sets
+    return (
+        rows,
+        total_cached,
+        total_repaired,
+        total_recomputed,
+        total_unrepaired_pymfe_outputs,
+        failed_feature_sets,
+    )
 
 
 __all__ = [

@@ -17,12 +17,42 @@ logger = get_logger(__name__)
 PROCESS_TERMINATE_GRACE_S = 5
 
 
-def _regression_allowed_features(groups: tuple[str, ...]) -> list[str]:
-    """Enumerate pymfe features for the given groups minus the classification-only deny list."""
+def enumerate_pymfe_raw_features(
+    groups: tuple[str, ...],
+    *,
+    problem_type: str | None = None,
+    raw_features: tuple[str, ...] | None = None,
+) -> tuple[str, ...]:
+    """Enumerate raw pymfe feature names requested by the current config."""
     from pymfe.mfe import MFE
 
-    enumerated = MFE.valid_metafeatures(groups=tuple(groups))
-    return [feature for feature in enumerated if feature not in PYMFE_CLASSIFICATION_ONLY]
+    selected = None if raw_features is None else set(raw_features)
+    filter_classification_only = should_filter_classification_only(problem_type)
+    if not hasattr(MFE, "valid_metafeatures"):
+        if raw_features is None:
+            return ()
+        return tuple(
+            dict.fromkeys(
+                feature
+                for feature in raw_features
+                if not (filter_classification_only and feature in PYMFE_CLASSIFICATION_ONLY)
+            )
+        )
+    enumerated: list[str] = []
+    for group in groups:
+        for feature in MFE.valid_metafeatures(groups=(group,)):
+            if selected is not None and feature not in selected:
+                continue
+            if filter_classification_only and feature in PYMFE_CLASSIFICATION_ONLY:
+                continue
+            if feature not in enumerated:
+                enumerated.append(feature)
+    return tuple(enumerated)
+
+
+def _regression_allowed_features(groups: tuple[str, ...]) -> list[str]:
+    """Enumerate pymfe features for the given groups minus the classification-only deny list."""
+    return list(enumerate_pymfe_raw_features(groups, problem_type="regression"))
 
 
 def _trace_prefix(trace_label: str | None) -> str:
@@ -123,6 +153,7 @@ def _extract_per_feature_with_timeout(
     trace: bool,
     trace_label: str | None,
     problem_type: str | None,
+    raw_features: tuple[str, ...] | None,
 ) -> dict[str, float]:
     """Extract pymfe features one at a time in isolated subprocesses.
 
@@ -143,8 +174,11 @@ def _extract_per_feature_with_timeout(
     ctx = mp.get_context()
 
     filter_classification_only = should_filter_classification_only(problem_type)
+    selected = None if raw_features is None else set(raw_features)
     for group in groups:
         raw_features = tuple(MFE.valid_metafeatures(groups=(group,)))
+        if selected is not None:
+            raw_features = tuple(f for f in raw_features if f in selected)
         if filter_classification_only:
             skipped_in_group = [f for f in raw_features if f in PYMFE_CLASSIFICATION_ONLY]
             raw_features = tuple(f for f in raw_features if f not in PYMFE_CLASSIFICATION_ONLY)
@@ -273,6 +307,7 @@ def extract_pymfe_features(
     summary: tuple[str, ...],
     problem_type: str | None = None,
     per_feature_timeout_s: float | None = None,
+    raw_features: tuple[str, ...] | None = None,
     trace: bool = False,
     trace_label: str | None = None,
 ) -> dict[str, float]:
@@ -294,6 +329,7 @@ def extract_pymfe_features(
     trace_prefix = _trace_prefix(trace_label)
     X_encoded, categorical_indices = _prepare_pymfe_input(X_train)
     y_encoded = None if y_train is None else y_train.to_numpy()
+    selected_raw_features = None if raw_features is None else set(raw_features)
 
     filter_classification_only = should_filter_classification_only(problem_type)
     if filter_classification_only:
@@ -301,6 +337,7 @@ def extract_pymfe_features(
             1
             for group in groups
             for feature in MFE.valid_metafeatures(groups=(group,))
+            if selected_raw_features is None or feature in selected_raw_features
             if feature in PYMFE_CLASSIFICATION_ONLY
         )
         if skipped_count:
@@ -322,10 +359,22 @@ def extract_pymfe_features(
             trace,
             trace_label,
             problem_type,
+            raw_features,
         )
 
     if not trace:
-        if filter_classification_only:
+        if raw_features is not None:
+            allowed = list(
+                enumerate_pymfe_raw_features(
+                    groups,
+                    problem_type=problem_type,
+                    raw_features=raw_features,
+                )
+            )
+            if not allowed:
+                return {}
+            mfe = MFE(groups=list(groups), features=allowed, summary=list(summary))
+        elif filter_classification_only:
             allowed = _regression_allowed_features(groups)
             if not allowed:
                 return {}
@@ -339,6 +388,8 @@ def extract_pymfe_features(
     all_features: dict[str, float] = {}
     for group in groups:
         raw_features = tuple(MFE.valid_metafeatures(groups=(group,)))
+        if selected_raw_features is not None:
+            raw_features = tuple(f for f in raw_features if f in selected_raw_features)
         if filter_classification_only:
             raw_features = tuple(f for f in raw_features if f not in PYMFE_CLASSIFICATION_ONLY)
             if not raw_features:
@@ -357,15 +408,14 @@ def extract_pymfe_features(
             ", ".join(raw_features),
         )
         group_start = time.perf_counter()
-        if filter_classification_only:
-            mfe = MFE(
-                groups=[group],
-                features=list(raw_features),
-                summary=list(summary),
-                measure_time="total_summ",
-            )
-        else:
-            mfe = MFE(groups=[group], summary=list(summary), measure_time="total_summ")
+        mfe_kwargs = {
+            "groups": [group],
+            "summary": list(summary),
+            "measure_time": "total_summ",
+        }
+        if filter_classification_only or selected_raw_features is not None:
+            mfe_kwargs["features"] = list(raw_features)
+        mfe = MFE(**mfe_kwargs)
 
         fit_records: list[warnings.WarningMessage] = []
         try:

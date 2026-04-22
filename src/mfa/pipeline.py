@@ -219,6 +219,16 @@ def _analysis_stage_hash(*, gap_hash: str, metafeature_hash: str, unit: str) -> 
     )
 
 
+def _dataframe_content_hash(df: pd.DataFrame) -> str:
+    stable = df.copy()
+    sort_columns = [column for column in ("dataset", "repeat", "fold") if column in stable.columns]
+    if sort_columns:
+        stable = stable.sort_values(sort_columns).reset_index(drop=True)
+    stable = stable.reindex(sorted(stable.columns), axis=1)
+    payload = stable.to_json(orient="split", index=False, date_format="iso", double_precision=15)
+    return compute_config_hash({"dataframe": payload})
+
+
 def _statistics_cache_params(
     config: AnalysisConfig,
     *,
@@ -300,7 +310,7 @@ def run_analysis(
 
     validate_groups_against_data(raw_results, config.groups)
 
-    metafeature_hash = compute_stage_hash(
+    metafeature_cache_hash = compute_stage_hash(
         "metafeatures",
         cache_version_hash,
         {
@@ -308,21 +318,25 @@ def run_analysis(
             "feature_sets": config.metafeatures.feature_sets,
             "pymfe_groups": config.metafeatures.pymfe_groups,
             "pymfe_summary": config.metafeatures.pymfe_summary,
-            "pymfe_per_feature_timeout_s": config.metafeatures.pymfe_per_feature_timeout_s,
             "irregularity_components": config.metafeatures.irregularity_components,
             "schema_versions": _schema_versions_for_feature_sets(config.metafeatures.feature_sets),
             "problem_types": _metadata_problem_types_payload(metadata, dataset_list),
         },
     )
     metafeature_cache_enabled = config.cache.enabled and config.cache.stages.metafeatures
+    pymfe_enabled = "pymfe" in config.metafeatures.feature_sets
     metafeature_table = None
     if config.metafeatures.trace and config.cache.enabled and config.cache.stages.metafeatures:
         logger.info(
             "Stage 2/5 meta-features: trace enabled; metafeature caches remain active, "
             "so live per-split diagnostics appear only on cache misses"
         )
-    if metafeature_cache_enabled:
-        metafeature_table = read_dataframe_cache(cache_dir, 2, "metafeatures", metafeature_hash)
+    if metafeature_cache_enabled and pymfe_enabled:
+        logger.info(
+            "Stage 2/5 meta-features: pymfe enabled; rebuilding from split cache to allow partial-cache repair"
+        )
+    if metafeature_cache_enabled and not pymfe_enabled:
+        metafeature_table = read_dataframe_cache(cache_dir, 2, "metafeatures", metafeature_cache_hash)
         if metafeature_table is not None:
             logger.info("Stage 2/5 meta-features: cache hit (%s)", _frame_summary(metafeature_table))
     if metafeature_table is None:
@@ -343,8 +357,13 @@ def run_analysis(
             backend=backend,
         )
         if metafeature_cache_enabled:
-            write_dataframe_cache(metafeature_table, cache_dir, 2, "metafeatures", metafeature_hash)
+            write_dataframe_cache(metafeature_table, cache_dir, 2, "metafeatures", metafeature_cache_hash)
         logger.info("Stage 2/5 meta-features: ready (%s)", _frame_summary(metafeature_table))
+    metafeature_hash = compute_stage_hash(
+        "metafeatures_content",
+        metafeature_cache_hash,
+        {"content_hash": _dataframe_content_hash(metafeature_table)},
+    )
 
     gap_hash = compute_stage_hash(
         "gaps",
