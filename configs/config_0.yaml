@@ -61,7 +61,7 @@ metafeatures:
     - skewness
   trace: true
   pymfe_per_feature_timeout_s: 600 # null or omitted → batch mode (unchanged)   
-  retry_failed_pymfe: true  # set true to repair/retry incomplete or failed cached pymfe split outputs                                                                                                                                                                                              
+  retry_failed_pymfe: false  # set true to repair/retry incomplete or failed cached pymfe split outputs                                                                                                                                                                                              
   irregularity_components:
     - irreg_min_cov_eig
     - irreg_std_skew
