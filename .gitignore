@@ -20,3 +20,6 @@ std.out
 logs/
 *.sh
 *.csv
+*.html
+.codex
+AGENTS.md
