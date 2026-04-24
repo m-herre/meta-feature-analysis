@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=mfa-warm
 #SBATCH --partition=cpu
-#SBATCH --cpus-per-task=64
-#SBATCH --mem=700G
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=900G
 #SBATCH --time=2-00:00:00
 #SBATCH --output=logs/warm_cache_%j.out
 #SBATCH --error=logs/warm_cache_%j.err
