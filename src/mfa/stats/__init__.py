@@ -1,11 +1,17 @@
 from __future__ import annotations
 
-from .correction import apply_fdr_correction
-from .correlation import correlate_all
-from .multivariate import run_multivariate
+from .correlation import (
+    EXCLUDED_PREDICTOR_COLUMNS,
+    assert_dataset_level_table,
+    build_robust_association_table,
+    estimate_feature_associations,
+)
+from .multivariate import run_multivariable_sensitivity
 
 __all__ = [
-    "apply_fdr_correction",
-    "correlate_all",
-    "run_multivariate",
+    "EXCLUDED_PREDICTOR_COLUMNS",
+    "assert_dataset_level_table",
+    "build_robust_association_table",
+    "estimate_feature_associations",
+    "run_multivariable_sensitivity",
 ]

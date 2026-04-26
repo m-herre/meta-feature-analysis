@@ -2,97 +2,122 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from scipy.stats import spearmanr
+import pytest
 
-from mfa.stats.correlation import bootstrap_correlation_ci, correlate_all
-from mfa.types import CorrelationMethod
+from mfa.stats.correlation import (
+    build_robust_association_table,
+    estimate_feature_associations,
+)
 
 
-def test_correlate_all_perfect_spearman(analysis_config) -> None:
-    analysis_table = pd.DataFrame(
+def _association_frame(n: int = 40) -> pd.DataFrame:
+    x = np.arange(n, dtype=float)
+    return pd.DataFrame(
         {
-            "comparison_name": ["nn_vs_gbdt"] * 5,
-            "dataset": [f"d{i}" for i in range(5)],
-            "log_n": [1, 2, 3, 4, 5],
-            "delta_norm": [10, 20, 30, 40, 50],
+            "dataset": [f"d{i}" for i in range(n)],
+            "delta_norm": x,
+            "strong": x,
+            "inverse": -x,
+            "weak": np.sin(x),
         }
     )
-    results = correlate_all(
-        analysis_table,
-        comparisons=analysis_config.comparisons,
-        predictors=["log_n"],
-        target="delta_norm",
-        confidence_interval=False,
+
+
+def test_estimate_feature_associations_rejects_duplicate_units() -> None:
+    table = _association_frame(4)
+    table.loc[1, "dataset"] = table.loc[0, "dataset"]
+
+    with pytest.raises(ValueError, match="not dataset-level"):
+        estimate_feature_associations(table, table_name="synthetic", feature_columns=["strong"], min_n=3)
+
+
+def test_estimate_feature_associations_adds_bh_and_bootstrap_columns() -> None:
+    associations = estimate_feature_associations(
+        _association_frame(),
+        table_name="synthetic",
+        feature_columns=["strong", "inverse", "weak"],
+        min_n=30,
+        bootstrap_repeats=50,
+        rank_stability_top_k=2,
+        random_seed=123,
     )
-    result = results[0]
-    assert np.isclose(result.statistic, 1.0)
-    assert result.direction_confirmed is True
+
+    assert set(["p_value_bh", "bh_reject_0_05", "ci_low", "ci_high"]).issubset(associations.columns)
+    assert set(
+        [
+            "bootstrap_rank_median",
+            "bootstrap_rank_q05",
+            "bootstrap_rank_q95",
+            "bootstrap_top_k_frequency",
+        ]
+    ).issubset(associations.columns)
+    assert associations.loc[associations["feature"].isin(["strong", "inverse"]), "bh_reject_0_05"].all()
+    assert associations.loc[associations["feature"] == "strong", "ci_low"].notna().all()
 
 
-def test_correlate_all_handles_small_sample(analysis_config) -> None:
-    analysis_table = pd.DataFrame(
+def test_estimate_feature_associations_marks_small_samples_untested() -> None:
+    associations = estimate_feature_associations(
+        _association_frame(5),
+        table_name="synthetic",
+        feature_columns=["strong"],
+        min_n=30,
+        bootstrap_repeats=20,
+    )
+
+    row = associations.iloc[0]
+    assert row["reason"] == "n < 30"
+    assert np.isnan(row["spearman_r"])
+    assert not bool(row["bh_reject_0_05"])
+
+
+def test_estimate_feature_associations_default_inference_excludes_gap_leakage_columns() -> None:
+    n = 30
+    x = np.arange(n, dtype=float)
+    table = pd.DataFrame(
         {
-            "comparison_name": ["nn_vs_gbdt"] * 2,
-            "dataset": ["d1", "d2"],
-            "log_n": [1, 2],
-            "delta_norm": [1, 0],
+            "dataset": [f"d{i}" for i in range(n)],
+            "comparison_name": ["nn_vs_tree"] * n,
+            "delta_norm": x,
+            "delta_raw": x * 10,
+            "best_a_error": x + 1,
+            "best_b_error": x + 2,
+            "text_context": ["context"] * n,
+            "real_feature": np.sin(x),
         }
     )
-    result = correlate_all(
-        analysis_table,
-        comparisons=analysis_config.comparisons,
-        predictors=["log_n"],
-        target="delta_norm",
-        confidence_interval=False,
-    )[0]
-    assert np.isnan(result.statistic)
-    assert np.isnan(result.p_value)
 
-
-def test_bootstrap_spearman_uses_average_ranks_under_ties() -> None:
-    # Discrete predictor guarantees frequent ties in resamples; bootstrap
-    # statistics must agree with scipy.stats.spearmanr on the same resamples.
-    rng = np.random.default_rng(42)
-    x = pd.Series(rng.integers(0, 3, size=50))
-    y = pd.Series(rng.integers(0, 3, size=50))
-    ci_lower, ci_upper = bootstrap_correlation_ci(
-        x,
-        y,
-        method=CorrelationMethod.SPEARMAN,
-        n_bootstrap=500,
-        confidence_level=0.95,
-        random_state=123,
+    associations = estimate_feature_associations(
+        table,
+        table_name="synthetic",
+        min_n=30,
+        bootstrap_repeats=20,
+        ci_top_k=0,
+        rank_stability_top_k=1,
     )
-    # Reproduce the same resamples with scipy's spearmanr as ground truth.
-    rng2 = np.random.default_rng(123)
-    x_arr = x.to_numpy()
-    y_arr = y.to_numpy()
-    reference = []
-    for start in range(0, 500, 1000):
-        size = min(1000, 500 - start)
-        indices = rng2.integers(0, len(x_arr), size=(size, len(x_arr)))
-        for row in indices:
-            stat, _ = spearmanr(x_arr[row], y_arr[row])
-            if np.isfinite(stat):
-                reference.append(stat)
-    expected_lower = float(np.quantile(reference, 0.025))
-    expected_upper = float(np.quantile(reference, 0.975))
-    assert np.isclose(ci_lower, expected_lower, atol=1e-10)
-    assert np.isclose(ci_upper, expected_upper, atol=1e-10)
+
+    assert associations["feature"].tolist() == ["real_feature"]
 
 
-def test_bootstrap_chunking_matches_monolithic_result() -> None:
-    # Chunking must be deterministic with respect to random_state: a chunk
-    # boundary in the middle of the draws should not shift the CI.
-    rng = np.random.default_rng(0)
-    x = pd.Series(rng.normal(size=80))
-    y = pd.Series(rng.normal(size=80))
-    ci_default = bootstrap_correlation_ci(
-        x, y, method=CorrelationMethod.PEARSON, n_bootstrap=2500, confidence_level=0.9, random_state=7
+def test_build_robust_association_table_filters_and_renames() -> None:
+    associations = estimate_feature_associations(
+        _association_frame(),
+        table_name="synthetic",
+        feature_columns=["strong", "inverse", "weak"],
+        min_n=30,
+        bootstrap_repeats=50,
+        rank_stability_top_k=2,
+        random_seed=123,
     )
-    ci_repeat = bootstrap_correlation_ci(
-        x, y, method=CorrelationMethod.PEARSON, n_bootstrap=2500, confidence_level=0.9, random_state=7
+    robust = build_robust_association_table(
+        associations,
+        table_name="synthetic",
+        min_sign_consistency=0.90,
+        top_n=1,
     )
-    assert ci_default == ci_repeat
-    assert ci_default[0] is not None and ci_default[1] is not None
-    assert ci_default[0] < ci_default[1]
+
+    assert len(robust) == 1
+    assert robust.loc[0, "analysis_table"] == "synthetic"
+    assert "spearman_rho" in robust.columns
+    assert "bh_q_value" in robust.columns
+    assert "bootstrap_top_k_frequency" in robust.columns
+    assert "bootstrap_top_25_frequency" not in robust.columns

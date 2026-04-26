@@ -87,17 +87,21 @@ result.gap_table.head()           # pairwise gaps per split
 result.metafeature_table.head()   # computed meta-features
 ```
 
-Convert correlation results to a DataFrame:
+Estimate notebook-style feature associations from the package helpers:
 
 ```python
-import pandas as pd
+from mfa.aggregation import ANALYSIS_CONTEXT_COLUMNS, infer_numeric_predictors
+from mfa.stats.correlation import estimate_feature_associations
 
-corr_df = pd.DataFrame([r.__dict__ for r in result.correlation_results])
-if result.correction_result is not None:
-    corr_df["p_value_adj"] = result.correction_result.adjusted_p_values
-    corr_df["rejected"] = result.correction_result.rejected
+context_columns = [column for column in ANALYSIS_CONTEXT_COLUMNS if column in result.analysis_table.columns]
+feature_columns = [column for column in infer_numeric_predictors(result.analysis_table) if column not in context_columns]
 
-corr_df.sort_values("p_value").head(20)
+associations = estimate_feature_associations(
+    result.analysis_table,
+    table_name="analysis",
+    feature_columns=feature_columns,
+)
+associations.sort_values("p_value").head(20)
 ```
 
 ### 4) Optional: custom comparison in code
@@ -144,9 +148,9 @@ from mfa import load_config, run_analysis
 - `gap_table`
 - `metafeature_table`
 - `analysis_table`
-- `correlation_results`
-- `correction_result`
-- `multivariate_result`
+- `correlation_results` (placeholder empty list; notebook-style stats live in `mfa.stats`)
+- `correction_result` (placeholder `None`)
+- `multivariate_result` (placeholder `None`)
 
 ---
 

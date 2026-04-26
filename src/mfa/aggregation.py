@@ -5,10 +5,15 @@ import warnings
 import numpy as np
 import pandas as pd
 
+from .metafeatures.basic import (
+    CLASSIFICATION_PROBLEM_TYPES as BASIC_CLASSIFICATION_PROBLEM_TYPES,
+)
 from .metafeatures.irregularity import (
     DEFAULT_IRREGULARITY_COMPONENTS,
     add_irregularity_proxy,
 )
+from .metafeatures.pymfe_catalog import PYMFE_CLASSIFICATION_ONLY
+from .stats.correlation import EXCLUDED_PREDICTOR_COLUMNS
 from .types import AnalysisUnit
 
 
@@ -21,11 +26,12 @@ def _strict_mean(series: pd.Series) -> float:
     size per predictor drifts away from delta_norm's (which sees every
     split). Propagating NaN forces the dataset to drop from per-predictor
     correlations visibly, via the existing `n_observations` in
-    `CorrelationResult`.
+    per-predictor association summaries.
     """
     if series.isna().any():
         return float("nan")
     return float(np.mean(series))
+
 
 JOIN_KEY_COLUMNS = ["dataset", "repeat", "fold"]
 GROUP_COLUMNS = [
@@ -42,6 +48,39 @@ ID_COLUMNS = {
     *GROUP_COLUMNS,
 }
 
+BASIC_CLASSIFICATION_ONLY_FEATURES = frozenset(
+    {
+        "n_classes",
+        "class_entropy",
+        "majority_class_fraction",
+        "minority_class_fraction",
+        "class_imbalance_ratio",
+    }
+)
+CLASSIFICATION_PROBLEM_TYPES = set(BASIC_CLASSIFICATION_PROBLEM_TYPES)
+
+ANALYSIS_CONTEXT_COLUMNS = [
+    "dataset",
+    "task_type",
+    "comparison_name",
+    "group_a_name",
+    "group_b_name",
+    "group_a_label",
+    "group_b_label",
+    "expected_direction",
+    "n_splits",
+    "best_a_error",
+    "best_a_norm_error",
+    "best_b_error",
+    "best_b_norm_error",
+    "delta_raw",
+    "delta_raw_std",
+    "delta_raw_sem",
+    "delta_norm",
+    "delta_norm_std",
+    "delta_norm_sem",
+]
+
 KNOWN_NUMERIC_GAP_COLUMNS = {
     "best_a_error",
     "best_a_norm_error",
@@ -50,6 +89,28 @@ KNOWN_NUMERIC_GAP_COLUMNS = {
     "delta_raw",
     "delta_norm",
 }
+
+
+def _is_pymfe_classification_only(column: str) -> bool:
+    if not column.startswith("pymfe__"):
+        return False
+    raw_feature = column.removeprefix("pymfe__").split(".", maxsplit=1)[0]
+    return raw_feature in PYMFE_CLASSIFICATION_ONLY
+
+
+def is_classification_only_feature(column: str) -> bool:
+    return column in BASIC_CLASSIFICATION_ONLY_FEATURES or _is_pymfe_classification_only(column)
+
+
+def infer_numeric_predictors(table: pd.DataFrame, *, target: str = "delta_norm") -> list[str]:
+    predictors = []
+    for column in table.columns:
+        if column == target or column in EXCLUDED_PREDICTOR_COLUMNS or column.startswith("best_"):
+            continue
+        numeric_values = pd.to_numeric(table[column], errors="coerce")
+        if pd.api.types.is_numeric_dtype(table[column]) or numeric_values.notna().any():
+            predictors.append(column)
+    return predictors
 
 
 def _analysis_columns(metafeature_table: pd.DataFrame, gap_table: pd.DataFrame) -> list[str]:
@@ -117,11 +178,7 @@ def _unique_dataset_irregularity(
     unique_datasets = dataset_level_df[["dataset"]].drop_duplicates().reset_index(drop=True)
     if not available:
         return unique_datasets.assign(irregularity=np.nan)
-    unique_rows = (
-        dataset_level_df[["dataset", *available]]
-        .drop_duplicates(subset=["dataset"])
-        .reset_index(drop=True)
-    )
+    unique_rows = dataset_level_df[["dataset", *available]].drop_duplicates(subset=["dataset"]).reset_index(drop=True)
     with_composite = add_irregularity_proxy(unique_rows, components=tuple(available))
     return with_composite[["dataset", "irregularity"]]
 
@@ -149,9 +206,7 @@ def build_analysis_table(
     if not analysis.empty:
         dataset_level = analysis.groupby(GROUP_COLUMNS, as_index=False, dropna=False).agg(**aggregations)
         if components_present:
-            irregularity_lookup = _unique_dataset_irregularity(
-                dataset_level, components=irregularity_components
-            )
+            irregularity_lookup = _unique_dataset_irregularity(dataset_level, components=irregularity_components)
             dataset_level = dataset_level.drop(columns=["irregularity"], errors="ignore").merge(
                 irregularity_lookup, on="dataset", how="left", validate="many_to_one"
             )

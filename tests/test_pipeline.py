@@ -6,7 +6,6 @@ from pathlib import Path
 import pandas as pd
 
 from mfa.pipeline import run_analysis
-from mfa.stats.correlation import correlate_all as real_correlate_all
 from mfa.types import AnalysisResult
 
 
@@ -52,18 +51,12 @@ def test_run_analysis_reuses_upstream_caches_across_stats_changes(
     task_metadata = pd.DataFrame({"dataset": ["dataset_a", "dataset_b"], "tid": [1, 2]})
     context = FakeTabArenaContext(raw_results)
     metafeature_calls = {"count": 0}
-    correlation_calls = {"count": 0}
 
     def fake_build_metafeature_table(*args, **kwargs) -> pd.DataFrame:
         metafeature_calls["count"] += 1
         return metafeatures.copy()
 
-    def counting_correlate_all(*args, **kwargs):
-        correlation_calls["count"] += 1
-        return real_correlate_all(*args, **kwargs)
-
     monkeypatch.setattr("mfa.pipeline.build_metafeature_table", fake_build_metafeature_table)
-    monkeypatch.setattr("mfa.pipeline.correlate_all", counting_correlate_all)
 
     result_first = run_analysis(
         config,
@@ -90,10 +83,11 @@ def test_run_analysis_reuses_upstream_caches_across_stats_changes(
     assert not result_first.analysis_table.empty
     assert context.calls == 1
     assert metafeature_calls["count"] == 1
-    assert correlation_calls["count"] == 2
     assert result_second.analysis_table.equals(result_first.analysis_table)
-    assert result_third.correction_result is not None
-    assert result_third.correction_result.alpha == 0.10
+    assert result_third.analysis_table.equals(result_first.analysis_table)
+    assert result_third.correlation_results == []
+    assert result_third.correction_result is None
+    assert result_third.multivariate_result is None
 
 
 def test_run_analysis_reuses_metafeature_cache_when_trace_enabled(
@@ -302,8 +296,9 @@ def test_run_analysis_handles_empty_comparisons_without_crashing(
 
     assert result.gap_table.empty
     assert result.analysis_table.empty
-    assert result.correction_result is not None
-    assert all(item.n_observations == 0 for item in result.correlation_results)
+    assert result.correlation_results == []
+    assert result.correction_result is None
+    assert result.multivariate_result is None
 
 
 def test_run_analysis_invalidates_raw_cache_when_metric_columns_change(
@@ -410,9 +405,8 @@ def test_run_analysis_logs_stage_progress(
     )
 
     assert any("Starting analysis:" in message for message in messages)
-    assert any("Stage 1/5 raw results:" in message for message in messages)
-    assert any("Stage 2/5 meta-features:" in message for message in messages)
-    assert any("Stage 3/5 pairwise gaps:" in message for message in messages)
-    assert any("Stage 4/5 analysis table:" in message for message in messages)
-    assert any("Stage 5/5 statistics:" in message for message in messages)
+    assert any("Stage 1/4 raw results:" in message for message in messages)
+    assert any("Stage 2/4 meta-features:" in message for message in messages)
+    assert any("Stage 3/4 pairwise gaps:" in message for message in messages)
+    assert any("Stage 4/4 analysis table:" in message for message in messages)
     assert any("Analysis complete:" in message for message in messages)

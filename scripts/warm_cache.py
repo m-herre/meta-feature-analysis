@@ -125,8 +125,7 @@ def main() -> int:
         f"config_hash={result.config_hash} "
         f"analysis_table={result.analysis_table.shape} "
         f"metafeature_table={result.metafeature_table.shape} "
-        f"gap_table={result.gap_table.shape} "
-        f"correlation_tests={len(result.correlation_results)}",
+        f"gap_table={result.gap_table.shape}",
         flush=True,
     )
     return 0

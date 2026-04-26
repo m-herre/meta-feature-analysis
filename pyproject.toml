@@ -13,6 +13,7 @@ dependencies = [
   "pandas",
   "pyyaml",
   "scipy",
+  "scikit-learn",
   "statsmodels",
   "tabarena",
   "tqdm",

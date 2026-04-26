@@ -10,14 +10,14 @@ from mfa.config import ConfigValidationError, load_config, parse_config
 from mfa.types import AnalysisUnit, CorrelationMethod
 
 
-def test_load_default_config() -> None:
-    config = load_config(Path("configs/default.yaml"))
+def test_load_project_config() -> None:
+    config = load_config(Path("configs/config_0.yaml"))
     assert config.analysis.unit == AnalysisUnit.DATASET
     assert config.analysis.selection_error_column == "metric_error_val"
     assert config.metafeatures.retry_failed_pymfe is False
     assert config.statistics.correlation_method == CorrelationMethod.SPEARMAN
     assert config.comparisons[0].group_a.name == "nn"
-    assert config.comparisons[0].group_b.name == "gbdt"
+    assert config.comparisons[0].group_b.name == "tree"
     assert config.cache.directory == Path.cwd().resolve() / ".mfa_cache"
 
 
@@ -170,7 +170,7 @@ def test_parse_config_treats_null_metafeature_sequences_as_defaults(config_dict)
 
 def test_config_hash_is_deterministic(analysis_config) -> None:
     left = compute_config_hash(analysis_config.to_dict())
-    right = compute_config_hash(load_config(Path("configs/default.yaml")).to_dict())
+    right = compute_config_hash(load_config(Path("configs/config_0.yaml")).to_dict())
     assert left
     assert isinstance(left, str)
     assert len(left) == 16
