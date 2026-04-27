@@ -412,6 +412,206 @@ def test_build_metafeature_table_recomputes_corrupt_split_cache(
     assert any("split cache" in message and "unreadable" in message for message in warnings)
 
 
+def test_retry_failed_pymfe_repairs_failed_basic_split_cache(monkeypatch, tmp_path: Path) -> None:
+    import mfa.metafeatures.registry as registry
+    from mfa.metafeatures.basic import compute_basic_metafeatures as real_compute_basic_metafeatures
+
+    metadata = pd.DataFrame({"dataset": ["dataset_a"], "tid": [1], "n_repeats": [1], "n_folds": [1]})
+
+    class FakeTask:
+        def get_split_dimensions(self) -> tuple[int, int, int]:
+            return 1, 1, 1
+
+        def get_train_test_split(self, *, fold: int, repeat: int):
+            X = pd.DataFrame({"num": [1.0, 2.0, 3.0]})
+            y = pd.Series([0, 1, 0])
+            return X, y, X, y
+
+    monkeypatch.setattr("tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id", lambda task_id: FakeTask())
+
+    def exploding_basic(_X_train, _y_train=None, problem_type=None):
+        raise ValueError("deliberate basic failure")
+
+    monkeypatch.setattr(registry, "compute_basic_metafeatures", exploding_basic)
+    first = build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        feature_sets=("basic",),
+        n_jobs=1,
+    )
+    assert np.isnan(first["n"].iat[0])
+
+    split_path = metafeature_split_cache_dir(tmp_path) / "dataset_a__r0__f0.parquet"
+    failed_cache = pd.read_parquet(split_path)
+    assert '"basic"' in failed_cache["_cache_failed_sets"].iat[0]
+    assert np.isnan(failed_cache["n"].iat[0])
+
+    monkeypatch.setattr(registry, "compute_basic_metafeatures", real_compute_basic_metafeatures)
+    repaired = build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        feature_sets=("basic",),
+        retry_failed_pymfe=True,
+        n_jobs=1,
+    )
+
+    assert repaired["n"].iat[0] == 3
+    rewritten = pd.read_parquet(split_path)
+    assert rewritten["n"].iat[0] == 3
+    assert rewritten["_cache_failed_sets"].iat[0] == "{}"
+
+
+def test_retry_failed_pymfe_repairs_failed_redundancy_split_cache(monkeypatch, tmp_path: Path) -> None:
+    import mfa.metafeatures.registry as registry
+    from mfa.metafeatures.redundancy import compute_redundancy_metafeatures as real_compute_redundancy_metafeatures
+
+    metadata = pd.DataFrame({"dataset": ["dataset_a"], "tid": [1], "n_repeats": [1], "n_folds": [1]})
+
+    class FakeTask:
+        def get_split_dimensions(self) -> tuple[int, int, int]:
+            return 1, 1, 1
+
+        def get_train_test_split(self, *, fold: int, repeat: int):
+            X = pd.DataFrame({"a": [1.0, 2.0, 3.0, 4.0], "b": [2.0, 4.0, 6.0, 8.0]})
+            y = pd.Series([0, 1, 0, 1])
+            return X, y, X, y
+
+    monkeypatch.setattr("tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id", lambda task_id: FakeTask())
+
+    def exploding_redundancy(_X_num):
+        raise RuntimeError("deliberate redundancy failure")
+
+    monkeypatch.setattr(registry, "compute_redundancy_metafeatures", exploding_redundancy)
+    first = build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        feature_sets=("basic", "redundancy"),
+        n_jobs=1,
+    )
+    assert np.isnan(first["mean_abs_corr"].iat[0])
+    assert first["n"].iat[0] == 4
+
+    split_path = metafeature_split_cache_dir(tmp_path) / "dataset_a__r0__f0.parquet"
+    failed_cache = pd.read_parquet(split_path)
+    assert '"redundancy"' in failed_cache["_cache_failed_sets"].iat[0]
+    assert np.isnan(failed_cache["mean_abs_corr"].iat[0])
+
+    monkeypatch.setattr(registry, "compute_redundancy_metafeatures", real_compute_redundancy_metafeatures)
+    repaired = build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        feature_sets=("basic", "redundancy"),
+        retry_failed_pymfe=True,
+        n_jobs=1,
+    )
+
+    assert repaired["mean_abs_corr"].iat[0] == 1.0
+    rewritten = pd.read_parquet(split_path)
+    assert rewritten["mean_abs_corr"].iat[0] == 1.0
+    assert rewritten["_cache_failed_sets"].iat[0] == "{}"
+
+
+def test_missing_basic_split_cache_column_repairs_only_when_retry_enabled(monkeypatch, tmp_path: Path) -> None:
+    metadata = pd.DataFrame({"dataset": ["dataset_a"], "tid": [1], "n_repeats": [1], "n_folds": [1]})
+
+    class FakeTask:
+        def get_split_dimensions(self) -> tuple[int, int, int]:
+            return 1, 1, 1
+
+        def get_train_test_split(self, *, fold: int, repeat: int):
+            X = pd.DataFrame({"num": [1.0, 2.0, 3.0]})
+            y = pd.Series([0, 1, 0])
+            return X, y, X, y
+
+    monkeypatch.setattr("tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id", lambda task_id: FakeTask())
+    build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        feature_sets=("basic",),
+        n_jobs=1,
+    )
+
+    split_path = metafeature_split_cache_dir(tmp_path) / "dataset_a__r0__f0.parquet"
+    cached = pd.read_parquet(split_path).drop(columns=["log_n"])
+    cached.to_parquet(split_path, index=False)
+
+    def fail_from_task_id(task_id: int):
+        raise AssertionError("incomplete basic split cache should not load the task unless retry is enabled")
+
+    monkeypatch.setattr("tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id", fail_from_task_id)
+    reused = build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        feature_sets=("basic",),
+        n_jobs=1,
+    )
+    assert "log_n" not in reused.columns
+
+    monkeypatch.setattr("tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id", lambda task_id: FakeTask())
+    repaired = build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        feature_sets=("basic",),
+        retry_failed_pymfe=True,
+        n_jobs=1,
+    )
+    assert math.isclose(repaired["log_n"].iat[0], math.log10(3))
+    assert "log_n" in pd.read_parquet(split_path).columns
+
+
+def test_existing_basic_nan_split_cache_cell_is_not_repaired(monkeypatch, tmp_path: Path) -> None:
+    metadata = pd.DataFrame(
+        {
+            "dataset": ["regression_dataset"],
+            "tid": [1],
+            "problem_type": ["regression"],
+            "n_repeats": [1],
+            "n_folds": [1],
+        }
+    )
+
+    class FakeTask:
+        def get_split_dimensions(self) -> tuple[int, int, int]:
+            return 1, 1, 1
+
+        def get_train_test_split(self, *, fold: int, repeat: int):
+            X = pd.DataFrame({"num": [1.0, 2.0, 3.0]})
+            y = pd.Series([1.0, 2.0, 3.0])
+            return X, y, X, y
+
+    monkeypatch.setattr("tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id", lambda task_id: FakeTask())
+    first = build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        feature_sets=("basic",),
+        n_jobs=1,
+    )
+    assert np.isnan(first["n_classes"].iat[0])
+
+    def fail_from_task_id(task_id: int):
+        raise AssertionError("existing basic NaN values should remain cache hits")
+
+    monkeypatch.setattr("tabarena.benchmark.task.openml.OpenMLTaskWrapper.from_task_id", fail_from_task_id)
+    second = build_metafeature_table(
+        metadata,
+        cache_dir=tmp_path,
+        use_cache=True,
+        feature_sets=("basic",),
+        retry_failed_pymfe=True,
+        n_jobs=1,
+    )
+
+    pd.testing.assert_frame_equal(second, first)
+
+
 def test_build_metafeature_table_logs_dataset_progress(
     monkeypatch,
     tmp_path: Path,

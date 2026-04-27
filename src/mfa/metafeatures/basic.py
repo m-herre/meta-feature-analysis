@@ -8,6 +8,40 @@ HIGH_CARDINALITY_MIN_UNIQUE = 50
 HIGH_CARDINALITY_N_FRACTION = 0.1
 NEAR_CONSTANT_FRACTION_THRESHOLD = 0.95
 CLASSIFICATION_PROBLEM_TYPES = {"binary", "multiclass"}
+BASIC_METAFEATURE_COLUMNS = (
+    "n",
+    "d",
+    "log_n",
+    "log_d",
+    "n_over_d",
+    "d_over_n",
+    "n_num_features",
+    "n_cat_features",
+    "num_fraction",
+    "cat_fraction",
+    "missing_fraction",
+    "n_classes",
+    "class_entropy",
+    "majority_class_fraction",
+    "minority_class_fraction",
+    "class_imbalance_ratio",
+    "mean_cat_cardinality",
+    "max_cat_cardinality",
+    "high_cardinality_fraction",
+    "cat_cardinality_to_n_ratio",
+    "row_missing_fraction",
+    "feature_missing_fraction",
+    "num_missing_fraction",
+    "cat_missing_fraction",
+    "max_feature_missing_fraction",
+    "mean_abs_skew",
+    "max_abs_skew",
+    "mean_kurtosis",
+    "outlier_fraction_iqr",
+    "zero_fraction",
+    "constant_feature_fraction",
+    "near_constant_feature_fraction",
+)
 
 
 def get_categorical_columns(X: pd.DataFrame) -> list[str]:

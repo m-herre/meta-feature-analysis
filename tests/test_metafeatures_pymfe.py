@@ -413,8 +413,7 @@ def test_build_metafeature_table_keeps_pymfe_columns_when_one_dataset_fails(monk
     assert poisoned["n"] == 7
 
 
-def test_extract_requested_metafeatures_propagates_basic_failures(monkeypatch) -> None:
-    """basic and irregularity are not best-effort — internal failures must surface."""
+def test_extract_requested_metafeatures_isolates_basic_failures(monkeypatch) -> None:
     import mfa.metafeatures.registry as registry
 
     def exploding_basic(_X_train, _y_train=None, problem_type=None):
@@ -422,14 +421,17 @@ def test_extract_requested_metafeatures_propagates_basic_failures(monkeypatch) -
 
     monkeypatch.setattr(registry, "compute_basic_metafeatures", exploding_basic)
 
-    with pytest.raises(ValueError, match="deliberate basic failure"):
-        extract_requested_metafeatures(
-            pd.DataFrame({"num": [1.0, 2.0, 3.0]}),
-            pd.Series([0, 1, 0]),
-            feature_sets=("basic",),
-            pymfe_groups=(),
-            pymfe_summary=(),
-        )
+    features, failed_sets = extract_requested_metafeatures(
+        pd.DataFrame({"num": [1.0, 2.0, 3.0]}),
+        pd.Series([0, 1, 0]),
+        feature_sets=("basic",),
+        pymfe_groups=(),
+        pymfe_summary=(),
+    )
+
+    assert set(features) >= {"n", "log_n", "n_over_d"}
+    assert all(pd.isna(value) for value in features.values())
+    assert failed_sets["basic"].startswith("ValueError: deliberate basic failure")
 
 
 def test_extract_requested_metafeatures_propagates_irregularity_failures(monkeypatch) -> None:

@@ -13,17 +13,22 @@ import pandas as pd
 from .._logging import get_logger
 from ..cache import metafeature_split_cache_dir
 from ..parallel import get_executor, resolve_n_jobs
-from .basic import BASIC_METAFEATURE_SCHEMA_VERSION
+from .basic import BASIC_METAFEATURE_COLUMNS, BASIC_METAFEATURE_SCHEMA_VERSION
 from .irregularity import (
     DEFAULT_IRREGULARITY_COMPONENTS,
     IRREGULARITY_PROXY_SCHEMA_VERSION,
 )
 from .pymfe_catalog import PYMFE_FILTER_SCHEMA_VERSION
 from .pymfe_features import enumerate_pymfe_raw_features
-from .redundancy import REDUNDANCY_METAFEATURE_SCHEMA_VERSION
+from .redundancy import REDUNDANCY_METAFEATURE_COLUMNS, REDUNDANCY_METAFEATURE_SCHEMA_VERSION
 from .registry import extract_requested_metafeatures
 
 logger = get_logger(__name__)
+
+STANDARD_REPAIRABLE_FEATURE_COLUMNS = {
+    "basic": BASIC_METAFEATURE_COLUMNS,
+    "redundancy": REDUNDANCY_METAFEATURE_COLUMNS,
+}
 
 
 def _split_trace_label(dataset: str, repeat: int, fold: int) -> str:
@@ -270,6 +275,62 @@ def _repair_cached_pymfe_split(
     return merged_row, merged_failed_sets, unrepaired_outputs
 
 
+def _standard_repair_targets(
+    cached_row: dict[str, Any],
+    cached_failed_sets: dict[str, str],
+    feature_sets: tuple[str, ...],
+) -> tuple[str, ...]:
+    targets: list[str] = []
+    for set_name, expected_columns in STANDARD_REPAIRABLE_FEATURE_COLUMNS.items():
+        if set_name not in feature_sets:
+            continue
+        if set_name in cached_failed_sets or any(column not in cached_row for column in expected_columns):
+            targets.append(set_name)
+    return tuple(targets)
+
+
+def _repair_cached_standard_split(
+    task,
+    cached_row: dict[str, Any],
+    cached_failed_sets: dict[str, str],
+    *,
+    dataset: str,
+    repeat: int,
+    fold: int,
+    problem_type: str | None,
+    feature_sets_to_repair: tuple[str, ...],
+    trace: bool,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    repaired_row, repair_failed_sets = extract_split_metafeatures(
+        task,
+        dataset,
+        repeat,
+        fold,
+        problem_type=problem_type,
+        feature_sets=feature_sets_to_repair,
+        trace=trace,
+    )
+
+    merged_row = dict(cached_row)
+    merged_failed_sets = dict(cached_failed_sets)
+    for set_name in feature_sets_to_repair:
+        expected_columns = STANDARD_REPAIRABLE_FEATURE_COLUMNS[set_name]
+        if set_name in repair_failed_sets:
+            merged_failed_sets[set_name] = repair_failed_sets[set_name]
+            continue
+
+        for column in expected_columns:
+            if column in repaired_row:
+                merged_row[column] = repaired_row[column]
+
+        missing_columns = tuple(column for column in expected_columns if column not in merged_row)
+        if missing_columns:
+            merged_failed_sets[set_name] = "Missing repaired output(s): " + ", ".join(missing_columns)
+        else:
+            merged_failed_sets.pop(set_name, None)
+    return merged_row, merged_failed_sets
+
+
 def extract_split_metafeatures(
     task,
     dataset: str,
@@ -381,8 +442,14 @@ def _process_one_split(
                 cached = None
             if cached is not None:
                 cached_row, cached_failed_sets = cached
+                standard_feature_sets_to_repair: tuple[str, ...] = ()
                 pymfe_raw_features_to_repair: tuple[str, ...] = ()
                 if retry_failed_pymfe:
+                    standard_feature_sets_to_repair = _standard_repair_targets(
+                        cached_row,
+                        cached_failed_sets,
+                        feature_sets,
+                    )
                     pymfe_raw_features = _configured_pymfe_raw_features(
                         feature_sets,
                         pymfe_groups,
@@ -398,22 +465,38 @@ def _process_one_split(
                                 pymfe_summary=pymfe_summary,
                             )
                         )
-                if pymfe_raw_features_to_repair:
+                if standard_feature_sets_to_repair or pymfe_raw_features_to_repair:
                     task = _get_cached_task(task_id)
-                    repaired_row, repaired_failed_sets, unrepaired_outputs = _repair_cached_pymfe_split(
-                        task,
-                        cached_row,
-                        cached_failed_sets,
-                        dataset=dataset,
-                        repeat=repeat,
-                        fold=fold,
-                        problem_type=problem_type,
-                        pymfe_groups=pymfe_groups,
-                        pymfe_summary=pymfe_summary,
-                        pymfe_per_feature_timeout_s=pymfe_per_feature_timeout_s,
-                        missing_raw_features=pymfe_raw_features_to_repair,
-                        trace=trace,
-                    )
+                    repaired_row = cached_row
+                    repaired_failed_sets = cached_failed_sets
+                    unrepaired_outputs = 0
+                    if standard_feature_sets_to_repair:
+                        repaired_row, repaired_failed_sets = _repair_cached_standard_split(
+                            task,
+                            repaired_row,
+                            repaired_failed_sets,
+                            dataset=dataset,
+                            repeat=repeat,
+                            fold=fold,
+                            problem_type=problem_type,
+                            feature_sets_to_repair=standard_feature_sets_to_repair,
+                            trace=trace,
+                        )
+                    if pymfe_raw_features_to_repair:
+                        repaired_row, repaired_failed_sets, unrepaired_outputs = _repair_cached_pymfe_split(
+                            task,
+                            repaired_row,
+                            repaired_failed_sets,
+                            dataset=dataset,
+                            repeat=repeat,
+                            fold=fold,
+                            problem_type=problem_type,
+                            pymfe_groups=pymfe_groups,
+                            pymfe_summary=pymfe_summary,
+                            pymfe_per_feature_timeout_s=pymfe_per_feature_timeout_s,
+                            missing_raw_features=pymfe_raw_features_to_repair,
+                            trace=trace,
+                        )
                     _write_cached_split(split_path, repaired_row, cache_identity, repaired_failed_sets)
                     return (
                         dataset,
@@ -597,10 +680,9 @@ def _log_failed_feature_sets(
 ) -> None:
     """Emit one WARNING per feature set that failed on any split.
 
-    No columns are dropped: splits that failed a feature set simply lack
-    its columns in their per-split row, so the aggregated table carries
-    NaN for those (split, feature) cells while preserving values from the
-    splits that did succeed.
+    Fixed-schema failures keep NaN placeholders in the per-split row; variable
+    outputs may be absent unless another split produced those columns. Healthy
+    splits keep their values.
     """
     if not failed_feature_sets:
         return
@@ -699,8 +781,14 @@ def _build_sequential(
                         cached = None
                     if cached is not None:
                         cached_row, cached_failed_sets = cached
+                        standard_feature_sets_to_repair: tuple[str, ...] = ()
                         pymfe_raw_features_to_repair: tuple[str, ...] = ()
                         if retry_failed_pymfe:
+                            standard_feature_sets_to_repair = _standard_repair_targets(
+                                cached_row,
+                                cached_failed_sets,
+                                feature_sets,
+                            )
                             pymfe_raw_features = _configured_pymfe_raw_features(
                                 feature_sets,
                                 pymfe_groups,
@@ -716,29 +804,47 @@ def _build_sequential(
                                         pymfe_summary=pymfe_summary,
                                     )
                                 )
-                        if pymfe_raw_features_to_repair:
-                            repaired_row, cached_failed_sets, unrepaired_outputs = _repair_cached_pymfe_split(
-                                _ensure_task_loaded(),
-                                cached_row,
-                                cached_failed_sets,
-                                dataset=dataset,
-                                repeat=repeat,
-                                fold=fold,
-                                problem_type=problem_type,
-                                pymfe_groups=pymfe_groups,
-                                pymfe_summary=pymfe_summary,
-                                pymfe_per_feature_timeout_s=pymfe_per_feature_timeout_s,
-                                missing_raw_features=pymfe_raw_features_to_repair,
-                                trace=trace,
-                            )
-                            _write_cached_split(split_path, repaired_row, split_cache_identity, cached_failed_sets)
+                        if standard_feature_sets_to_repair or pymfe_raw_features_to_repair:
+                            task_for_repair = _ensure_task_loaded()
+                            repaired_row = cached_row
+                            repaired_failed_sets = cached_failed_sets
+                            unrepaired_outputs = 0
+                            if standard_feature_sets_to_repair:
+                                repaired_row, repaired_failed_sets = _repair_cached_standard_split(
+                                    task_for_repair,
+                                    repaired_row,
+                                    repaired_failed_sets,
+                                    dataset=dataset,
+                                    repeat=repeat,
+                                    fold=fold,
+                                    problem_type=problem_type,
+                                    feature_sets_to_repair=standard_feature_sets_to_repair,
+                                    trace=trace,
+                                )
+                            if pymfe_raw_features_to_repair:
+                                repaired_row, repaired_failed_sets, unrepaired_outputs = _repair_cached_pymfe_split(
+                                    task_for_repair,
+                                    repaired_row,
+                                    repaired_failed_sets,
+                                    dataset=dataset,
+                                    repeat=repeat,
+                                    fold=fold,
+                                    problem_type=problem_type,
+                                    pymfe_groups=pymfe_groups,
+                                    pymfe_summary=pymfe_summary,
+                                    pymfe_per_feature_timeout_s=pymfe_per_feature_timeout_s,
+                                    missing_raw_features=pymfe_raw_features_to_repair,
+                                    trace=trace,
+                                )
+                            _write_cached_split(split_path, repaired_row, split_cache_identity, repaired_failed_sets)
                             rows.append(repaired_row)
                             dataset_repaired_splits += 1
                             dataset_unrepaired_pymfe_outputs += unrepaired_outputs
                         else:
                             rows.append(cached_row)
                             dataset_cached_splits += 1
-                        for set_name, err in cached_failed_sets.items():
+                            repaired_failed_sets = cached_failed_sets
+                        for set_name, err in repaired_failed_sets.items():
                             failed_feature_sets.setdefault(set_name, {})[(dataset, repeat, fold)] = err
                         continue
 

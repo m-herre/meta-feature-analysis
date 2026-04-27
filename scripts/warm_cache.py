@@ -71,6 +71,11 @@ def main() -> int:
         default=0,
         help="Random seed used with --sample-datasets.",
     )
+    parser.add_argument(
+        "--repair-metafeatures",
+        action="store_true",
+        help="Force metafeature split-cache repair by running with retry_failed_pymfe=True.",
+    )
     args = parser.parse_args()
 
     from dataclasses import replace
@@ -79,6 +84,11 @@ def main() -> int:
     from mfa.parallel import resolve_n_jobs
 
     config = load_config(args.config)
+    if args.repair_metafeatures:
+        config = replace(
+            config,
+            metafeatures=replace(config.metafeatures, retry_failed_pymfe=True),
+        )
     if args.sample_datasets is not None and args.sample_datasets < 1:
         parser.error("--sample-datasets must be at least 1.")
     # resolve_n_jobs(-1) uses os.cpu_count(), which on a shared cluster node
@@ -97,7 +107,8 @@ def main() -> int:
         f"[warm_cache] config={args.config.name} "
         f"n_jobs(resolved)={resolved} "
         f"SLURM_CPUS_PER_TASK={slurm_cpus_env} "
-        f"backend={config.parallelism.backend}",
+        f"backend={config.parallelism.backend} "
+        f"repair_metafeatures={args.repair_metafeatures}",
         flush=True,
     )
     selected_datasets = args.datasets

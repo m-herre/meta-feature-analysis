@@ -208,6 +208,148 @@ def test_run_analysis_bypasses_metafeature_table_cache_when_pymfe_enabled(
     assert metafeature_calls["count"] == 2
 
 
+def test_run_analysis_bypasses_metafeature_table_cache_for_basic_repair(
+    analysis_config,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = replace(
+        analysis_config,
+        cache=replace(analysis_config.cache, enabled=True, directory=tmp_path),
+        metafeatures=replace(
+            analysis_config.metafeatures,
+            feature_sets=("basic",),
+            retry_failed_pymfe=True,
+        ),
+    )
+    raw_results = pd.DataFrame(
+        {
+            "dataset": ["dataset_a", "dataset_a", "dataset_b", "dataset_b"],
+            "fold": [0, 0, 0, 0],
+            "method": ["nn_alpha", "gbdt_alpha", "nn_alpha", "gbdt_alpha"],
+            "metric_error": [0.20, 0.10, 0.18, 0.12],
+            "metric_error_val": [0.21, 0.11, 0.19, 0.13],
+            "config_type": ["NN_A", "GBDT_A", "NN_A", "GBDT_A"],
+            "method_subtype": ["tuned", "tuned", "tuned", "tuned"],
+        }
+    )
+    metafeatures = pd.DataFrame(
+        {
+            "dataset": ["dataset_a", "dataset_b"],
+            "repeat": [0, 0],
+            "fold": [0, 0],
+            "log_n": [2.0, 2.2],
+            "n_over_d": [10.0, 12.0],
+        }
+    )
+    task_metadata = pd.DataFrame({"dataset": ["dataset_a", "dataset_b"], "tid": [1, 2]})
+    context = FakeTabArenaContext(raw_results)
+    metafeature_calls = {"count": 0}
+
+    def fake_build_metafeature_table(*args, **kwargs) -> pd.DataFrame:
+        metafeature_calls["count"] += 1
+        return metafeatures.copy()
+
+    monkeypatch.setattr("mfa.pipeline.build_metafeature_table", fake_build_metafeature_table)
+
+    run_analysis(
+        config,
+        datasets=["dataset_a", "dataset_b"],
+        task_metadata=task_metadata,
+        tabarena_context=context,
+    )
+    run_analysis(
+        config,
+        datasets=["dataset_a", "dataset_b"],
+        task_metadata=task_metadata,
+        tabarena_context=context,
+    )
+
+    assert context.calls == 1
+    assert metafeature_calls["count"] == 2
+
+
+def test_basic_repair_overwrites_retry_false_metafeature_table_cache(
+    analysis_config,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config_false = replace(
+        analysis_config,
+        cache=replace(analysis_config.cache, enabled=True, directory=tmp_path),
+        metafeatures=replace(analysis_config.metafeatures, feature_sets=("basic",), retry_failed_pymfe=False),
+    )
+    config_true = replace(
+        config_false,
+        metafeatures=replace(config_false.metafeatures, retry_failed_pymfe=True),
+    )
+    raw_results = pd.DataFrame(
+        {
+            "dataset": ["dataset_a", "dataset_a", "dataset_b", "dataset_b"],
+            "fold": [0, 0, 0, 0],
+            "method": ["nn_alpha", "gbdt_alpha", "nn_alpha", "gbdt_alpha"],
+            "metric_error": [0.20, 0.10, 0.18, 0.12],
+            "metric_error_val": [0.21, 0.11, 0.19, 0.13],
+            "config_type": ["NN_A", "GBDT_A", "NN_A", "GBDT_A"],
+            "method_subtype": ["tuned", "tuned", "tuned", "tuned"],
+        }
+    )
+    stale_metafeatures = pd.DataFrame(
+        {
+            "dataset": ["dataset_a", "dataset_b"],
+            "repeat": [0, 0],
+            "fold": [0, 0],
+            "log_n": [1.0, 1.1],
+            "n_over_d": [5.0, 6.0],
+        }
+    )
+    repaired_metafeatures = pd.DataFrame(
+        {
+            "dataset": ["dataset_a", "dataset_b"],
+            "repeat": [0, 0],
+            "fold": [0, 0],
+            "log_n": [2.0, 2.2],
+            "n_over_d": [10.0, 12.0],
+        }
+    )
+    task_metadata = pd.DataFrame({"dataset": ["dataset_a", "dataset_b"], "tid": [1, 2]})
+    context = FakeTabArenaContext(raw_results)
+    metafeature_calls = {"count": 0}
+
+    def fake_build_metafeature_table(*args, **kwargs) -> pd.DataFrame:
+        metafeature_calls["count"] += 1
+        if kwargs["retry_failed_pymfe"]:
+            return repaired_metafeatures.copy()
+        return stale_metafeatures.copy()
+
+    monkeypatch.setattr("mfa.pipeline.build_metafeature_table", fake_build_metafeature_table)
+
+    first = run_analysis(
+        config_false,
+        datasets=["dataset_a", "dataset_b"],
+        task_metadata=task_metadata,
+        tabarena_context=context,
+    )
+    repaired = run_analysis(
+        config_true,
+        datasets=["dataset_a", "dataset_b"],
+        task_metadata=task_metadata,
+        tabarena_context=context,
+    )
+    normal_after_repair = run_analysis(
+        config_false,
+        datasets=["dataset_a", "dataset_b"],
+        task_metadata=task_metadata,
+        tabarena_context=context,
+    )
+
+    assert first.metafeature_table["log_n"].tolist() == [1.0, 1.1]
+    assert repaired.metafeature_table["log_n"].tolist() == [2.0, 2.2]
+    assert normal_after_repair.metafeature_table["log_n"].tolist() == [2.0, 2.2]
+    assert context.calls == 1
+    assert metafeature_calls["count"] == 2
+
+
 def test_run_analysis_accepts_string_method_variant_override(
     analysis_config,
     monkeypatch,

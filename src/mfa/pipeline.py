@@ -190,31 +190,33 @@ def run_analysis(
             "feature_sets": config.metafeatures.feature_sets,
             "pymfe_groups": config.metafeatures.pymfe_groups,
             "pymfe_summary": config.metafeatures.pymfe_summary,
-            "retry_failed_pymfe": config.metafeatures.retry_failed_pymfe,
             "irregularity_components": config.metafeatures.irregularity_components,
             "schema_versions": _schema_versions_for_feature_sets(config.metafeatures.feature_sets),
             "problem_types": _metadata_problem_types_payload(metadata, dataset_list),
         },
     )
     metafeature_cache_enabled = config.cache.enabled and config.cache.stages.metafeatures
+    repairable_feature_sets = {"basic", "redundancy", "pymfe"}
+    repairable_enabled = any(feature_set in repairable_feature_sets for feature_set in config.metafeatures.feature_sets)
     pymfe_enabled = "pymfe" in config.metafeatures.feature_sets
+    rebuild_from_split_cache = pymfe_enabled or (config.metafeatures.retry_failed_pymfe and repairable_enabled)
     metafeature_table = None
     if config.metafeatures.trace and config.cache.enabled and config.cache.stages.metafeatures:
         logger.info(
             "Stage 2/4 meta-features: trace enabled; metafeature caches remain active, "
             "so live per-split diagnostics appear only on cache misses"
         )
-    if metafeature_cache_enabled and pymfe_enabled:
+    if metafeature_cache_enabled and rebuild_from_split_cache:
         if config.metafeatures.retry_failed_pymfe:
             logger.info(
-                "Stage 2/4 meta-features: pymfe enabled; rebuilding from split cache to allow partial-cache repair"
+                "Stage 2/4 meta-features: rebuilding from split cache to allow metafeature repair"
             )
         else:
             logger.info(
                 "Stage 2/4 meta-features: pymfe enabled; rebuilding from split cache and reusing cached "
-                "pymfe failures/incomplete outputs as-is"
+                "failures/incomplete outputs as-is"
             )
-    if metafeature_cache_enabled and not pymfe_enabled:
+    if metafeature_cache_enabled and not rebuild_from_split_cache:
         metafeature_table = read_dataframe_cache(cache_dir, 2, "metafeatures", metafeature_cache_hash)
         if metafeature_table is not None:
             logger.info("Stage 2/4 meta-features: cache hit (%s)", _frame_summary(metafeature_table))

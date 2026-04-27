@@ -6,16 +6,17 @@ import pandas as pd
 REDUNDANCY_METAFEATURE_SCHEMA_VERSION = 1
 HIGH_CORR_THRESHOLD = 0.9
 MAX_REDUNDANCY_NUMERIC_FEATURES = 512
+REDUNDANCY_METAFEATURE_COLUMNS = (
+    "mean_abs_corr",
+    "max_abs_corr",
+    "high_corr_pair_fraction",
+    "effective_rank",
+    "participation_ratio",
+)
 
 
 def _nan_redundancy_features() -> dict[str, float]:
-    return {
-        "mean_abs_corr": np.nan,
-        "max_abs_corr": np.nan,
-        "high_corr_pair_fraction": np.nan,
-        "effective_rank": np.nan,
-        "participation_ratio": np.nan,
-    }
+    return {column: np.nan for column in REDUNDANCY_METAFEATURE_COLUMNS}
 
 
 def compute_redundancy_metafeatures(X_num: pd.DataFrame) -> dict[str, float]:
