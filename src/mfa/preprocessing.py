@@ -68,19 +68,28 @@ def preprocess_analysis_table(
     table_name: str,
     max_feature_missingness: float = MAX_FEATURE_MISSINGNESS,
     context_columns: Sequence[str] = (),
+    filter_table: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     cleaned = table.copy()
     for column in cleaned.columns:
         numeric_values = pd.to_numeric(cleaned[column], errors="coerce")
         if pd.api.types.is_numeric_dtype(cleaned[column]) or numeric_values.notna().any():
             cleaned[column] = numeric_values.replace([np.inf, -np.inf], np.nan)
-    feature_columns = [column for column in feature_columns if column in cleaned.columns]
+    filter_cleaned = cleaned if filter_table is None else filter_table.copy()
+    if filter_table is not None:
+        for column in filter_cleaned.columns:
+            numeric_values = pd.to_numeric(filter_cleaned[column], errors="coerce")
+            if pd.api.types.is_numeric_dtype(filter_cleaned[column]) or numeric_values.notna().any():
+                filter_cleaned[column] = numeric_values.replace([np.inf, -np.inf], np.nan)
+    feature_columns = [
+        column for column in feature_columns if column in cleaned.columns and column in filter_cleaned.columns
+    ]
 
-    missing_fraction = cleaned[list(feature_columns)].isna().mean().sort_values(ascending=False)
+    missing_fraction = filter_cleaned[list(feature_columns)].isna().mean().sort_values(ascending=False)
     high_missing_features = missing_fraction[missing_fraction > max_feature_missingness].index.tolist()
     after_missingness = [column for column in feature_columns if column not in high_missing_features]
 
-    near_constant = _near_constant_report(cleaned, after_missingness)
+    near_constant = _near_constant_report(filter_cleaned, after_missingness)
     near_constant_features = near_constant["feature"].tolist() if not near_constant.empty else []
     retained_features = [column for column in after_missingness if column not in near_constant_features]
 

@@ -28,6 +28,45 @@ def test_preprocess_analysis_table_drops_high_missing_and_near_constant_features
     assert set(report["feature"]) == {"high_missing", "near_constant"}
 
 
+def test_preprocess_analysis_table_can_use_reference_table_for_feature_mask() -> None:
+    table = pd.DataFrame(
+        {
+            "dataset": [f"d{i}" for i in range(4)],
+            "delta_norm": np.arange(4, dtype=float),
+            "locally_complete_globally_missing": np.arange(4, dtype=float),
+            "locally_variable_globally_constant": np.arange(4, dtype=float),
+            "kept": np.arange(4, dtype=float),
+        }
+    )
+    reference_table = pd.DataFrame(
+        {
+            "dataset": [f"d{i}" for i in range(10)],
+            "locally_complete_globally_missing": [np.nan] * 3 + list(range(7)),
+            "locally_variable_globally_constant": [1.0] * 10,
+            "kept": np.arange(10, dtype=float),
+        }
+    )
+
+    processed, report = preprocess_analysis_table(
+        table,
+        [
+            "locally_complete_globally_missing",
+            "locally_variable_globally_constant",
+            "kept",
+        ],
+        table_name="synthetic",
+        max_feature_missingness=0.2,
+        context_columns=["dataset", "delta_norm"],
+        filter_table=reference_table,
+    )
+
+    assert processed.columns.tolist() == ["dataset", "delta_norm", "kept"]
+    assert set(report["feature"]) == {
+        "locally_complete_globally_missing",
+        "locally_variable_globally_constant",
+    }
+
+
 def test_reduce_redundant_features_collapses_high_spearman_pair() -> None:
     table = pd.DataFrame(
         {
